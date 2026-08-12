@@ -82,7 +82,7 @@ export class Room {
     return !!token && token === this.hostId;
   }
 
-  addPlayer(socketId, name, faceState) {
+  addPlayer(socketId, name, faceState, country, countryCode) {
     const token = randomUUID();
     const color = CONFIG.PLAYER_COLORS[this.players.size % CONFIG.PLAYER_COLORS.length];
     const player = {
@@ -93,6 +93,11 @@ export class Room {
       // src/components/AvatarCreator.tsx). Opcional: clientes que no la
       // manden (p. ej. la app movil) quedan con la cara neutral por defecto.
       faceState: faceState || 'neutral',
+      // Pais resuelto por IP en el momento de identificarse (ver
+      // socket/handlers.js + utils/geoip.js). null si no se pudo resolver
+      // (IP local/privada, o la consulta fallo).
+      country: country || null,
+      countryCode: countryCode || null,
       ready: false,
       connected: true,
       ...makeInitialPlayerState(),
@@ -357,7 +362,30 @@ export class Room {
   // --- Serializacion para el cliente ---
 
   playerLobbyDTO(p) {
-    return { id: p.id, name: p.name, color: p.color, faceState: p.faceState || 'neutral', ready: p.ready, connected: p.connected };
+    return {
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      faceState: p.faceState || 'neutral',
+      country: p.country || null,
+      countryCode: p.countryCode || null,
+      ready: p.ready,
+      connected: p.connected,
+    };
+  }
+
+  // Resumen liviano para el listado publico de salas (ver rooms:list) — no
+  // expone posiciones/estado de partida, solo lo necesario para elegir una
+  // sala a la que unirse.
+  summaryDTO() {
+    return {
+      code: this.code,
+      mode: this.mode,
+      levelId: this.levelId,
+      state: this.state,
+      maxPlayers: this.maxPlayers,
+      players: [...this.players.values()].map((p) => this.playerLobbyDTO(p)),
+    };
   }
 
   toDTO() {

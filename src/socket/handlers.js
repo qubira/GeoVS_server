@@ -1,5 +1,6 @@
 import { CONFIG } from '../config.js';
 import { DEFAULT_LEVEL_ID, listLevels } from '../game/levels.js';
+import { lookupCountry, clientIpFromSocket } from '../utils/geoip.js';
 
 // Registra todos los listeners de socket.io. El servidor es la autoridad: cada
 // handler valida el estado de la sala/host antes de aplicar un cambio, nunca
@@ -15,16 +16,29 @@ export function registerSocketHandlers(io, roomManager) {
   io.on('connection', (socket) => {
     socket.data.name = null;
     socket.data.faceState = 'neutral';
+    socket.data.country = null;
+    socket.data.countryCode = null;
 
-    socket.on('player:identify', ({ name, faceState } = {}, ack) => {
+    socket.on('player:identify', async ({ name, faceState } = {}, ack) => {
       const clean = String(name || '').trim().slice(0, 16) || `Jugador-${socket.id.slice(0, 4)}`;
       socket.data.name = clean;
       if (FACE_STATES.has(faceState)) socket.data.faceState = faceState;
+
+      // Resuelve pais por IP una sola vez por conexion (se cachea por IP en
+      // geoip.js). No bloquea si falla: el jugador queda sin pais (null).
+      const geo = await lookupCountry(clientIpFromSocket(socket));
+      socket.data.country = geo.country;
+      socket.data.countryCode = geo.countryCode;
+
       ack?.({ ok: true, playerId: socket.id });
     });
 
     socket.on('levels:list', (_payload, ack) => {
       ack?.({ levels: listLevels() });
+    });
+
+    socket.on('rooms:list', (_payload, ack) => {
+      ack?.({ rooms: roomManager.listRooms() });
     });
 
     socket.on('room:create', ({ levelId, maxPlayers, mode } = {}, ack) => {
@@ -34,7 +48,7 @@ export function registerSocketHandlers(io, roomManager) {
         maxPlayers,
         mode,
       });
-      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState);
+      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode);
       socket.join(room.code);
       roomManager.joinSocketToRoom(socket.id, room.code);
       ack?.({ ok: true, roomCode: room.code, room: room.toDTO(), yourPlayerId: player.id });
@@ -47,7 +61,7 @@ export function registerSocketHandlers(io, roomManager) {
       if (room.state !== 'lobby') return ack?.({ ok: false, error: 'ALREADY_STARTED' });
       if (room.isFull()) return ack?.({ ok: false, error: 'ROOM_FULL' });
 
-      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState);
+      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode);
       socket.join(room.code);
       roomManager.joinSocketToRoom(socket.id, room.code);
       socket.to(room.code).emit('room:playerJoined', { player: room.playerLobbyDTO(player) });

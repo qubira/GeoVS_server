@@ -35,6 +35,15 @@ export class RoomManager {
     this.socketToRoom.delete(socketId);
   }
 
+  // Listado publico de todas las salas vivas (cualquier estado), para la
+  // pantalla de "salas activas" del cliente. No filtra por unibles: el
+  // cliente decide que mostrar/habilitar segun `state`/`maxPlayers`.
+  listRooms() {
+    return [...this.rooms.values()]
+      .sort((a, b) => b.players.size - a.players.size)
+      .map((room) => room.summaryDTO());
+  }
+
   // Elimina la sala si quedo vacia (limpia el intervalo del countdown/gameloop
   // para no dejar timers huerfanos corriendo en el proceso).
   disposeIfEmpty(room) {
