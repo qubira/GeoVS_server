@@ -2,14 +2,22 @@ import { PHYSICS } from '../config.js';
 
 const { GRAVITY, JUMP_VELOCITY, MAX_FALL_SPEED, SPEED_X, PLAYER_SIZE, GROUND_Y } = PHYSICS;
 
-// Resuelve la colision de un jugador contra UN obstaculo (AABB).
-// prevBottom: borde inferior del jugador ANTES de moverse este tick, se usa
-// para distinguir "aterrizar encima" (seguro) de "chocar de lado" (muerte).
+// Margen de "perdon": la caja de colision contra obstaculos es mas chica que
+// el cubo visible (40x40). Sin esto, un salto que se ve limpio en pantalla
+// puede "morir" por un roce de pocos pixeles contra la esquina invisible del
+// sprite (los picos se dibujan como triangulo pero su caja era el cuadrado
+// completo). No afecta el suelo ni el tamano visual, solo esta comprobacion.
+const HITBOX_MARGIN = 6;
+
+// Resuelve la colision de un jugador contra UN obstaculo (AABB con margen de
+// perdon). prevBottom: borde inferior "de perdon" del jugador ANTES de
+// moverse este tick, se usa para distinguir "aterrizar encima" (seguro) de
+// "chocar de lado" (muerte).
 function resolveObstacle(player, obstacle, prevBottom) {
-  const left = player.x;
-  const right = player.x + PLAYER_SIZE;
-  const top = player.y;
-  const bottom = player.y + PLAYER_SIZE;
+  const left = player.x + HITBOX_MARGIN;
+  const right = player.x + PLAYER_SIZE - HITBOX_MARGIN;
+  const top = player.y + HITBOX_MARGIN;
+  const bottom = player.y + PLAYER_SIZE - HITBOX_MARGIN;
   const obsLeft = obstacle.x;
   const obsRight = obstacle.x + obstacle.w;
   const obsTop = obstacle.y;
@@ -44,7 +52,7 @@ export function stepPlayer(player, input, dt, level) {
     return events;
   }
 
-  const prevBottom = player.y + PLAYER_SIZE;
+  const prevBottom = player.y + PLAYER_SIZE - HITBOX_MARGIN;
 
   // Avance horizontal constante (estilo Geometry Dash: la camara/nivel corre solo)
   player.x += SPEED_X * dt;

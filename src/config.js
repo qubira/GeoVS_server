@@ -3,7 +3,7 @@
 // coincida con la simulacion autoritativa del servidor.
 export const CONFIG = {
   MODE: 'race', // 'race' | 'elimination'
-  RESPAWN_MODE: 'checkpoint', // 'checkpoint' | 'restart' (solo aplica en modo race)
+  RESPAWN_MODE: 'restart', // 'checkpoint' | 'restart' (solo aplica en modo race)
 
   TICK_RATE_HZ: 60, // frecuencia de simulacion fisica interna del servidor
   BROADCAST_RATE_HZ: 20, // frecuencia de envio de game:state a los clientes
