@@ -121,6 +121,12 @@ model CustomLevel {
   // GeoVS_juego/src/screens/GameScreen.tsx.
   backgroundScale    Float?
   musicUrl           String?
+  // Recorte del archivo de musica subido: solo se reproduce (y se repite en
+  // loop) el tramo [musicStartSec, musicEndSec), no el archivo completo — ver
+  // GeoVS_juego/src/screens/GameScreen.tsx. null en musicEndSec = hasta el
+  // final del archivo.
+  musicStartSec      Float    @default(0)
+  musicEndSec        Float?
   obstacles          Json
   checkpoints        Json     @default("[0]")
   // Empieza en false (borrador): mientras no se publique, no aparece en el

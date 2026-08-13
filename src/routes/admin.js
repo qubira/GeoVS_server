@@ -479,6 +479,8 @@ function validateLevelBody(body) {
   const speedX = body?.speedX !== undefined && body.speedX !== null && body.speedX !== '' ? Number(body.speedX) : null;
   const jumpVelocity = body?.jumpVelocity !== undefined && body.jumpVelocity !== null && body.jumpVelocity !== '' ? Number(body.jumpVelocity) : null;
   const backgroundScale = body?.backgroundScale !== undefined && body.backgroundScale !== null && body.backgroundScale !== '' ? Number(body.backgroundScale) : null;
+  const musicStartSec = Number.isFinite(Number(body?.musicStartSec)) ? Math.max(0, Number(body.musicStartSec)) : 0;
+  const musicEndSec = body?.musicEndSec !== undefined && body.musicEndSec !== null && body.musicEndSec !== '' ? Number(body.musicEndSec) : null;
   const obstacles = Array.isArray(body?.obstacles) ? body.obstacles : null;
   const checkpoints = Array.isArray(body?.checkpoints) ? body.checkpoints : [0];
 
@@ -487,6 +489,7 @@ function validateLevelBody(body) {
   if (speedX !== null && (!Number.isFinite(speedX) || speedX < 100 || speedX > 1200)) return { error: 'INVALID_SPEED' };
   if (jumpVelocity !== null && (!Number.isFinite(jumpVelocity) || jumpVelocity > -300 || jumpVelocity < -2000)) return { error: 'INVALID_JUMP' };
   if (backgroundScale !== null && (!Number.isFinite(backgroundScale) || backgroundScale < 0.3 || backgroundScale > 4)) return { error: 'INVALID_BACKGROUND_SCALE' };
+  if (musicEndSec !== null && (!Number.isFinite(musicEndSec) || musicEndSec <= musicStartSec)) return { error: 'INVALID_MUSIC_TRIM' };
   if (!obstacles) return { error: 'INVALID_OBSTACLES' };
   for (const o of obstacles) {
     if (!PHYSICS_TYPES.includes(o?.type)) return { error: 'INVALID_OBSTACLE_TYPE' };
@@ -508,6 +511,8 @@ function validateLevelBody(body) {
       backgroundImageUrl: body?.backgroundImageUrl ? String(body.backgroundImageUrl).trim() : null,
       backgroundScale,
       musicUrl: body?.musicUrl ? String(body.musicUrl).trim() : null,
+      musicStartSec,
+      musicEndSec,
       obstacles: obstacles.map((o) => ({
         type: o.type,
         x: Math.round(Number(o.x)),

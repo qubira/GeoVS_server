@@ -37,6 +37,8 @@ function rowToLevel(row) {
     backgroundImageUrl: row.backgroundImageUrl ?? undefined,
     backgroundScale: row.backgroundScale ?? undefined,
     musicUrl: row.musicUrl ?? undefined,
+    musicStartSec: row.musicStartSec ?? undefined,
+    musicEndSec: row.musicEndSec ?? undefined,
     obstacles: row.obstacles,
     checkpoints: row.checkpoints,
   };
