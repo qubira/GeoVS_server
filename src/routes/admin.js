@@ -242,6 +242,26 @@ adminRouter.get('/connections/summary', async (req, res) => {
   });
 });
 
+// --- Lista de espera (landing page) --------------------------------------
+// La tabla `waitlist` pertenece al proyecto de la landing (otro Prisma,
+// mismo Neon, schema "public"). Se lee via SQL crudo, calificando el
+// schema explicitamente, para no mezclarla con el modelo `User` de este
+// servidor (schema "geovs_accounts").
+adminRouter.get('/waitlist', async (req, res) => {
+  const rows = await prisma.$queryRaw`
+    SELECT id, name, email, "createdAt"
+    FROM public.waitlist
+    ORDER BY "createdAt" DESC
+    LIMIT 500
+  `;
+  res.json({ ok: true, entries: rows });
+});
+
+adminRouter.delete('/waitlist/:id', requireRole('admin'), async (req, res) => {
+  await prisma.$executeRaw`DELETE FROM public.waitlist WHERE id = ${req.params.id}`;
+  res.json({ ok: true });
+});
+
 adminRouter.get('/users/:id/connections', async (req, res) => {
   const logs = await prisma.connectionLog.findMany({
     where: { userId: req.params.id },
