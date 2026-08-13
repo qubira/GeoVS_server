@@ -116,6 +116,10 @@ model CustomLevel {
   speedX             Int?
   jumpVelocity       Int?
   backgroundImageUrl String?
+  // Escala del fondo sobre el ajuste "cover" por defecto (1 = normal, >1
+  // acerca/agranda, <1 aleja/achica) — ver como se aplica en
+  // GeoVS_juego/src/screens/GameScreen.tsx.
+  backgroundScale    Float?
   musicUrl           String?
   obstacles          Json
   checkpoints        Json     @default("[0]")

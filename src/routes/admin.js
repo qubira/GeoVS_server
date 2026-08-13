@@ -374,9 +374,26 @@ const ALLOWED_UPLOAD_KINDS = {
   background: /^image\//,
   music: /^audio\//,
 };
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+// 8MB alcanzaba para imagenes pero no para musica real (un mp3/wav de unos
+// minutos facil pasa eso) — la subida se quedaba trabada porque multer
+// tira el error ANTES de que corra el handler de la ruta, sin pasar por el
+// try/catch de abajo, asi que el cliente veia un error generico sin poder
+// saber que era por el tamaño. 25MB alcanza para una cancion normal.
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES } });
 
-adminRouter.post('/uploads', upload.single('file'), async (req, res) => {
+function handleUploadMiddleware(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'FILE_TOO_LARGE', maxBytes: MAX_UPLOAD_BYTES });
+    }
+    console.error('Error de multer al recibir el archivo:', err);
+    res.status(400).json({ error: 'UPLOAD_FAILED' });
+  });
+}
+
+adminRouter.post('/uploads', handleUploadMiddleware, async (req, res) => {
   const kind = String(req.body?.kind || '');
   const mimePattern = ALLOWED_UPLOAD_KINDS[kind];
   if (!mimePattern) return res.status(400).json({ error: 'INVALID_KIND' });
@@ -461,6 +478,7 @@ function validateLevelBody(body) {
   const durationSec = Number(body?.durationSec);
   const speedX = body?.speedX !== undefined && body.speedX !== null && body.speedX !== '' ? Number(body.speedX) : null;
   const jumpVelocity = body?.jumpVelocity !== undefined && body.jumpVelocity !== null && body.jumpVelocity !== '' ? Number(body.jumpVelocity) : null;
+  const backgroundScale = body?.backgroundScale !== undefined && body.backgroundScale !== null && body.backgroundScale !== '' ? Number(body.backgroundScale) : null;
   const obstacles = Array.isArray(body?.obstacles) ? body.obstacles : null;
   const checkpoints = Array.isArray(body?.checkpoints) ? body.checkpoints : [0];
 
@@ -468,6 +486,7 @@ function validateLevelBody(body) {
   if (!Number.isFinite(durationSec) || durationSec < 5 || durationSec > 600) return { error: 'INVALID_DURATION' };
   if (speedX !== null && (!Number.isFinite(speedX) || speedX < 100 || speedX > 1200)) return { error: 'INVALID_SPEED' };
   if (jumpVelocity !== null && (!Number.isFinite(jumpVelocity) || jumpVelocity > -300 || jumpVelocity < -2000)) return { error: 'INVALID_JUMP' };
+  if (backgroundScale !== null && (!Number.isFinite(backgroundScale) || backgroundScale < 0.3 || backgroundScale > 4)) return { error: 'INVALID_BACKGROUND_SCALE' };
   if (!obstacles) return { error: 'INVALID_OBSTACLES' };
   for (const o of obstacles) {
     if (!PHYSICS_TYPES.includes(o?.type)) return { error: 'INVALID_OBSTACLE_TYPE' };
@@ -487,6 +506,7 @@ function validateLevelBody(body) {
       jumpVelocity,
       length,
       backgroundImageUrl: body?.backgroundImageUrl ? String(body.backgroundImageUrl).trim() : null,
+      backgroundScale,
       musicUrl: body?.musicUrl ? String(body.musicUrl).trim() : null,
       obstacles: obstacles.map((o) => ({
         type: o.type,

@@ -35,6 +35,7 @@ function rowToLevel(row) {
     speedX: row.speedX ?? undefined,
     jumpVelocity: row.jumpVelocity ?? undefined,
     backgroundImageUrl: row.backgroundImageUrl ?? undefined,
+    backgroundScale: row.backgroundScale ?? undefined,
     musicUrl: row.musicUrl ?? undefined,
     obstacles: row.obstacles,
     checkpoints: row.checkpoints,
