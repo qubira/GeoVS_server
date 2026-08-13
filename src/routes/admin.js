@@ -211,7 +211,6 @@ adminRouter.get('/connections/summary', async (req, res) => {
 
   const byCountry = new Map();
   const byUserTotal = new Map();
-  const byUserByDay = new Map();
   let connectionsToday = 0;
   const today = dayKey(new Date());
 
@@ -221,10 +220,8 @@ adminRouter.get('/connections/summary', async (req, res) => {
 
     const duration = log.durationSec ?? Math.max(0, Math.round((Date.now() - log.connectedAt.getTime()) / 1000));
     const uname = log.user?.username || log.userId;
-    byUserTotal.set(uname, (byUserTotal.get(uname) || 0) + duration);
-
-    const key = `${uname}|${dayKey(log.connectedAt)}`;
-    byUserByDay.set(key, (byUserByDay.get(key) || 0) + duration);
+    const prev = byUserTotal.get(log.userId);
+    byUserTotal.set(log.userId, { userId: log.userId, username: uname, seconds: (prev?.seconds || 0) + duration });
 
     if (dayKey(log.connectedAt) === today) connectionsToday += 1;
   }
@@ -235,10 +232,33 @@ adminRouter.get('/connections/summary', async (req, res) => {
     byRole: byRole.map((r) => ({ role: r.role, count: r._count.role })),
     connectionsToday,
     byCountry: [...byCountry.entries()].map(([country, count]) => ({ country, count })).sort((a, b) => b.count - a.count),
-    topByTotalTime: [...byUserTotal.entries()]
-      .map(([username, seconds]) => ({ username, seconds }))
-      .sort((a, b) => b.seconds - a.seconds)
-      .slice(0, 20),
+    topByTotalTime: [...byUserTotal.values()].sort((a, b) => b.seconds - a.seconds).slice(0, 20),
+  });
+});
+
+// Sesiones recientes desde un pais dado, para poder "entrar" al detalle
+// desde la fila de "Conexiones por pais" del resumen.
+adminRouter.get('/connections/by-country', async (req, res) => {
+  const country = String(req.query.country || '');
+  const where = country === 'Desconocido' ? { country: null } : { country };
+  const logs = await prisma.connectionLog.findMany({
+    where,
+    orderBy: { connectedAt: 'desc' },
+    take: 100,
+    include: { user: { select: { id: true, username: true, role: true } } },
+  });
+  res.json({
+    ok: true,
+    sessions: logs.map((l) => ({
+      id: l.id,
+      userId: l.userId,
+      username: l.user?.username || l.userId,
+      role: l.user?.role || null,
+      ip: l.ip,
+      connectedAt: l.connectedAt,
+      disconnectedAt: l.disconnectedAt,
+      durationSec: l.durationSec,
+    })),
   });
 });
 
