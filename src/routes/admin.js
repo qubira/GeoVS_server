@@ -3,6 +3,7 @@ import { prisma } from '../db.js';
 import { hashPassword } from '../auth/password.js';
 import { requireAuth, requireRole } from '../auth/middleware.js';
 import { logAudit, logAuditMany } from '../auth/audit.js';
+import { listLevels } from '../game/levels.js';
 import {
   normalizeEmail,
   normalizeUsername,
@@ -24,6 +25,21 @@ adminRouter.use(requireAuth, requireRole('admin', 'moderator'));
 
 function dayKey(date) {
   return date.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+// Resuelve una ventana de fechas [start, end) a partir de los query params
+// `range` (day|week|month, default day) y `date` (YYYY-MM-DD, default hoy).
+// "Hoy" es simplemente range=day sin date. Se mantiene todo en UTC, igual que
+// dayKey() de arriba — no vale la pena agregar una libreria de timezone para
+// un dashboard de metricas.
+function rangeWindow(req) {
+  const range = ['day', 'week', 'month'].includes(req.query.range) ? req.query.range : 'day';
+  const dateStr = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : dayKey(new Date());
+  const end = new Date(`${dateStr}T00:00:00.000Z`);
+  end.setUTCDate(end.getUTCDate() + 1); // fin del dia seleccionado (exclusive)
+  const days = range === 'day' ? 1 : range === 'week' ? 7 : 30;
+  const start = new Date(end.getTime() - days * 24 * 3600 * 1000);
+  return { start, end, range, date: dateStr };
 }
 
 // --- Usuarios ---------------------------------------------------------
@@ -199,41 +215,126 @@ adminRouter.get('/audit-logs', async (req, res) => {
 // --- Conexiones / analitica ---------------------------------------------
 
 adminRouter.get('/connections/summary', async (req, res) => {
-  const [totalUsers, byRole, logs] = await Promise.all([
+  const { start, end } = rangeWindow(req);
+  const [totalUsers, byRole, connectionsInRange, playSessions] = await Promise.all([
     prisma.user.count(),
     prisma.user.groupBy({ by: ['role'], _count: { role: true } }),
-    prisma.connectionLog.findMany({
-      orderBy: { connectedAt: 'desc' },
-      take: 2000,
-      include: { user: { select: { username: true } } },
+    prisma.connectionLog.count({ where: { connectedAt: { gte: start, lt: end } } }),
+    // "Mas tiempo conectado" ahora se calcula desde PlaySession (tiempo
+    // JUGANDO, no tiempo conectado): sentarse en menus/lobby sin jugar ya no
+    // suma aqui, solo las rondas activas (ver Room.js _openPlaySession/
+    // _closePlaySession).
+    prisma.playSession.findMany({
+      where: { startedAt: { gte: start, lt: end } },
+      take: 3000,
+      select: { userId: true, durationSec: true, startedAt: true, user: { select: { username: true } } },
     }),
   ]);
 
-  const byCountry = new Map();
   const byUserTotal = new Map();
-  let connectionsToday = 0;
-  const today = dayKey(new Date());
-
-  for (const log of logs) {
-    const country = log.country || 'Desconocido';
-    byCountry.set(country, (byCountry.get(country) || 0) + 1);
-
-    const duration = log.durationSec ?? Math.max(0, Math.round((Date.now() - log.connectedAt.getTime()) / 1000));
-    const uname = log.user?.username || log.userId;
-    const prev = byUserTotal.get(log.userId);
-    byUserTotal.set(log.userId, { userId: log.userId, username: uname, seconds: (prev?.seconds || 0) + duration });
-
-    if (dayKey(log.connectedAt) === today) connectionsToday += 1;
+  for (const s of playSessions) {
+    const duration = s.durationSec ?? Math.max(0, Math.round((Date.now() - s.startedAt.getTime()) / 1000));
+    const prev = byUserTotal.get(s.userId);
+    byUserTotal.set(s.userId, { userId: s.userId, username: s.user?.username || s.userId, seconds: (prev?.seconds || 0) + duration });
   }
 
   res.json({
     ok: true,
     totalUsers,
     byRole: byRole.map((r) => ({ role: r.role, count: r._count.role })),
-    connectionsToday,
-    byCountry: [...byCountry.entries()].map(([country, count]) => ({ country, count })).sort((a, b) => b.count - a.count),
+    connectionsInRange,
     topByTotalTime: [...byUserTotal.values()].sort((a, b) => b.seconds - a.seconds).slice(0, 20),
   });
+});
+
+// Cuentas conectadas AHORA MISMO por pais (para el panel "en vivo", con
+// polling). Distinto de /accounts/with-session-by-country, que es historico.
+adminRouter.get('/connections/online-by-country', async (_req, res) => {
+  const rows = await prisma.connectionLog.groupBy({
+    by: ['country'],
+    where: { disconnectedAt: null },
+    _count: { _all: true },
+  });
+  const byCountry = rows
+    .map((r) => ({ country: r.country || 'Desconocido', count: r._count._all }))
+    .sort((a, b) => b.count - a.count);
+  res.json({ ok: true, totalOnline: byCountry.reduce((sum, c) => sum + c.count, 0), byCountry });
+});
+
+// Cuentas DISTINTAS que tuvieron al menos una sesion por pais, en el rango
+// seleccionado (historico/acumulado). Si una cuenta se conecto desde dos
+// paises en el rango, cuenta una vez en cada uno.
+adminRouter.get('/accounts/with-session-by-country', async (req, res) => {
+  const { start, end } = rangeWindow(req);
+  const logs = await prisma.connectionLog.findMany({
+    where: { connectedAt: { gte: start, lt: end } },
+    select: { userId: true, country: true },
+  });
+  const seen = new Set();
+  const byCountry = new Map();
+  for (const log of logs) {
+    const country = log.country || 'Desconocido';
+    const key = `${log.userId}|${country}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    byCountry.set(country, (byCountry.get(country) || 0) + 1);
+  }
+  res.json({
+    ok: true,
+    byCountry: [...byCountry.entries()].map(([country, accounts]) => ({ country, accounts })).sort((a, b) => b.accounts - a.accounts),
+  });
+});
+
+// Niveles mas jugados: ranking general, por pais, y top jugadores por nivel.
+adminRouter.get('/levels/popularity', async (req, res) => {
+  const { start, end } = rangeWindow(req);
+  const sessions = await prisma.playSession.findMany({
+    where: { startedAt: { gte: start, lt: end } },
+    take: 5000,
+    select: { levelId: true, country: true, userId: true, user: { select: { username: true } } },
+  });
+
+  const names = Object.fromEntries(listLevels().map((l) => [l.id, l.name]));
+  const overall = new Map();
+  const byCountry = new Map();
+  const byPlayer = new Map();
+
+  for (const s of sessions) {
+    const o = overall.get(s.levelId) || { levelId: s.levelId, levelName: names[s.levelId] || s.levelId, sessionCount: 0 };
+    o.sessionCount += 1;
+    overall.set(s.levelId, o);
+
+    const country = s.country || 'Desconocido';
+    const ck = `${s.levelId}|${country}`;
+    byCountry.set(ck, { levelId: s.levelId, country, count: (byCountry.get(ck)?.count || 0) + 1 });
+
+    const pk = `${s.levelId}|${s.userId}`;
+    const p = byPlayer.get(pk) || { levelId: s.levelId, userId: s.userId, username: s.user?.username || s.userId, sessionCount: 0 };
+    p.sessionCount += 1;
+    byPlayer.set(pk, p);
+  }
+
+  res.json({
+    ok: true,
+    overall: [...overall.values()].sort((a, b) => b.sessionCount - a.sessionCount),
+    byCountry: [...byCountry.values()].sort((a, b) => b.count - a.count),
+    topPlayers: [...byPlayer.values()].sort((a, b) => b.sessionCount - a.sessionCount).slice(0, 20),
+  });
+});
+
+// Timestamps crudos de PlaySession.startedAt para el histograma de "horas
+// pico" de un jugador. Se bucketiza por hora en el cliente (getHours(), hora
+// local del navegador del admin) en vez de aqui, para no tener que adivinar
+// una zona horaria "correcta" en el servidor.
+adminRouter.get('/users/:id/peak-hours', async (req, res) => {
+  const { start, end } = rangeWindow(req);
+  const sessions = await prisma.playSession.findMany({
+    where: { userId: req.params.id, startedAt: { gte: start, lt: end } },
+    orderBy: { startedAt: 'desc' },
+    take: 3000,
+    select: { startedAt: true },
+  });
+  res.json({ ok: true, source: 'playSession', timestamps: sessions.map((s) => s.startedAt) });
 });
 
 // Sesiones recientes desde un pais dado, para poder "entrar" al detalle
@@ -283,11 +384,10 @@ adminRouter.delete('/waitlist/:id', requireRole('admin'), async (req, res) => {
 });
 
 adminRouter.get('/users/:id/connections', async (req, res) => {
-  const logs = await prisma.connectionLog.findMany({
-    where: { userId: req.params.id },
-    orderBy: { connectedAt: 'desc' },
-    take: 500,
-  });
+  const [logs, playSessions] = await Promise.all([
+    prisma.connectionLog.findMany({ where: { userId: req.params.id }, orderBy: { connectedAt: 'desc' }, take: 500 }),
+    prisma.playSession.findMany({ where: { userId: req.params.id }, orderBy: { startedAt: 'desc' }, take: 500 }),
+  ]);
 
   const byDay = new Map();
   let totalSec = 0;
@@ -296,6 +396,17 @@ adminRouter.get('/users/:id/connections', async (req, res) => {
     totalSec += duration;
     const key = dayKey(log.connectedAt);
     byDay.set(key, (byDay.get(key) || 0) + duration);
+  }
+
+  // Tiempo realmente JUGANDO (distinto del tiempo conectado de arriba) — ver
+  // Room.js _openPlaySession/_closePlaySession.
+  const playByDay = new Map();
+  let playTotalSec = 0;
+  for (const s of playSessions) {
+    const duration = s.durationSec ?? Math.max(0, Math.round((Date.now() - s.startedAt.getTime()) / 1000));
+    playTotalSec += duration;
+    const key = dayKey(s.startedAt);
+    playByDay.set(key, (playByDay.get(key) || 0) + duration);
   }
 
   res.json({
@@ -311,5 +422,9 @@ adminRouter.get('/users/:id/connections', async (req, res) => {
       disconnectedAt: l.disconnectedAt,
       durationSec: l.durationSec,
     })),
+    play: {
+      totalSec: playTotalSec,
+      byDay: [...playByDay.entries()].map(([day, seconds]) => ({ day, seconds })).sort((a, b) => (a.day < b.day ? 1 : -1)),
+    },
   });
 });

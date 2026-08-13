@@ -3,6 +3,7 @@ import { CONFIG, PHYSICS } from '../config.js';
 import { stepPlayer, makeInitialPlayerState } from '../game/PhysicsEngine.js';
 import { getLevel } from '../game/levels.js';
 import { GameLoop } from '../game/GameLoop.js';
+import { prisma } from '../db.js';
 
 // Punto de reaparicion mas avanzado que el jugador ya cruzo. Los checkpoints
 // de cada nivel (level.checkpoints) se definen a mano en el diseño del nivel,
@@ -82,7 +83,7 @@ export class Room {
     return !!token && token === this.hostId;
   }
 
-  addPlayer(socketId, name, faceState, country, countryCode, role) {
+  addPlayer(socketId, name, faceState, country, countryCode, role, userId) {
     const token = randomUUID();
     const color = CONFIG.PLAYER_COLORS[this.players.size % CONFIG.PLAYER_COLORS.length];
     const player = {
@@ -101,6 +102,13 @@ export class Room {
       // Rol de la cuenta (player/developer/moderator/admin). null si es una
       // sesion anonima (sin cuenta, p. ej. la app movil todavia sin login).
       role: role || null,
+      // Id de cuenta autenticada (null = sesion anonima). Se usa para abrir
+      // PlaySession al empezar a jugar (ver startGame/_openPlaySession mas
+      // abajo) — sin cuenta no hay a quien atribuirle la metrica.
+      userId: userId || null,
+      // Promesa del PlaySession abierto mientras este jugador esta jugando
+      // activamente esta ronda (null si no esta jugando o no tiene cuenta).
+      playSessionOpen: null,
       ready: false,
       connected: true,
       ...makeInitialPlayerState(),
@@ -121,6 +129,12 @@ export class Room {
     if (!player) return null;
     player.connected = true;
     this.socketToToken.set(socketId, token);
+    // Si reconecta a media partida (p. ej. perdio señal y volvio), reabre su
+    // PlaySession: la desconexion ya cerro la anterior (markDisconnected), asi
+    // que el tiempo desconectado queda excluido de las metricas de juego.
+    if (this.state === 'playing' && player.userId && !player.playSessionOpen) {
+      this._openPlaySession(player);
+    }
     return player;
   }
 
@@ -147,7 +161,10 @@ export class Room {
     const token = this.tokenOf(socketId);
     if (!token) return { newHostId: null, playerId: null };
     const player = this.players.get(token);
-    if (player) player.connected = false;
+    if (player) {
+      player.connected = false;
+      if (this.state === 'playing') this._closePlaySession(player, 'disconnected');
+    }
     this.socketToToken.delete(socketId);
     let newHostId = null;
     if (this.hostId === token) {
@@ -220,6 +237,10 @@ export class Room {
     this.state = 'playing';
     this.roundStartTime = Date.now();
 
+    for (const player of this.players.values()) {
+      if (player.connected && player.userId) this._openPlaySession(player);
+    }
+
     this.roomChannel.emit('game:start', {
       levelId: this.levelId,
       levelData: this.level,
@@ -235,6 +256,46 @@ export class Room {
       onBroadcast: () => this.broadcastState(),
     });
     this.loop.start();
+  }
+
+  // --- Metricas: sesiones de juego activo ---
+  //
+  // Distinta de ConnectionLog (conexion de socket, puede incluir tiempo en
+  // menus/lobby): esto solo cubre el tramo en que el jugador esta realmente
+  // jugando una ronda (state === 'playing'). No se awaitea nunca desde tick()
+  // ni desde sus callers (ver comentario en tick()) para no introducir
+  // reentrancia en el loop de 60Hz; la promesa de apertura se guarda en
+  // `player.playSessionOpen` y el cierre se encadena sobre ella con `.then()`.
+
+  _openPlaySession(player) {
+    player.playSessionOpen = prisma.playSession
+      .create({
+        data: {
+          userId: player.userId,
+          levelId: this.levelId,
+          roomCode: this.code,
+          country: player.country,
+          countryCode: player.countryCode,
+        },
+      })
+      .catch((err) => {
+        console.error('Error abriendo play session:', err);
+        return null;
+      });
+  }
+
+  _closePlaySession(player, endReason) {
+    if (!player.playSessionOpen) return;
+    const openPromise = player.playSessionOpen;
+    player.playSessionOpen = null; // evita doble cierre si dos hooks disparan para el mismo jugador
+    openPromise
+      .then((session) => {
+        if (!session) return; // la creacion fallo o no habia cuenta
+        const endedAt = new Date();
+        const durationSec = Math.max(0, Math.round((endedAt - session.startedAt) / 1000));
+        return prisma.playSession.update({ where: { id: session.id }, data: { endedAt, durationSec, endReason } });
+      })
+      .catch((err) => console.error('Error cerrando play session:', err));
   }
 
   tick(dt) {
@@ -275,10 +336,12 @@ export class Room {
   onPlayerDeath(player) {
     if (this.mode === 'elimination') {
       player.eliminated = true;
+      this._closePlaySession(player, 'eliminated');
       this.roomChannel.emit('game:playerEliminated', { playerId: player.id });
       return;
     }
-    // modo race: programa reaparicion
+    // modo race: programa reaparicion (el jugador sigue jugando, no se cierra
+    // la play session)
     player.respawnAt = Date.now() + CONFIG.RESPAWN_DELAY_MS;
     this.roomChannel.emit('game:playerDied', { playerId: player.id, respawnAt: player.respawnAt });
   }
@@ -287,6 +350,7 @@ export class Room {
     const place = [...this.players.values()].filter((p) => p.finished).length; // ya se marco finished antes de esto
     player.finishTime = now - this.roundStartTime;
     if (this.winnerAt === null) this.winnerAt = now;
+    this._closePlaySession(player, 'finished');
     this.roomChannel.emit('game:playerFinished', { playerId: player.id, time: player.finishTime, place });
   }
 
@@ -326,6 +390,14 @@ export class Room {
       this.loop = null;
     }
     this.state = 'finished';
+
+    // Cualquiera que siga "in-progress" (ronda termino por timeout u otro
+    // motivo mientras seguia jugando) necesita que se le cierre la play
+    // session aqui; los ya 'disconnected' ya se cerraron en markDisconnected.
+    for (const p of this.players.values()) {
+      const status = p.finished ? 'finished' : p.eliminated ? 'eliminated' : p.connected ? 'in-progress' : 'disconnected';
+      if (status === 'in-progress') this._closePlaySession(p, 'round-ended');
+    }
 
     const results = [...this.players.values()]
       .map((p) => ({

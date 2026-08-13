@@ -29,6 +29,7 @@ model User {
 
   auditLogs      AuditLog[]
   connectionLogs ConnectionLog[]
+  playSessions   PlaySession[]
 
   @@map("users")
 }
@@ -77,4 +78,27 @@ model ConnectionLog {
   @@map("connection_logs")
   @@index([userId])
   @@index([connectedAt])
+}
+
+// Una fila por tramo continuo de juego ACTIVO (room.state === 'playing') de un
+// jugador autenticado en un nivel. Distinto de ConnectionLog: un jugador puede
+// estar conectado (menu/lobby/perfil) mucho mas tiempo del que pasa realmente
+// jugando. Metrica pura, no historial legal -> mismo onDelete que ConnectionLog.
+model PlaySession {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  levelId     String
+  roomCode    String?
+  country     String?
+  countryCode String?
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  durationSec Int?
+  endReason   String? // 'finished' | 'eliminated' | 'round-ended' | 'disconnected'
+
+  @@map("play_sessions")
+  @@index([userId])
+  @@index([startedAt])
+  @@index([levelId])
 }

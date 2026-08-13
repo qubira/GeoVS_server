@@ -83,7 +83,7 @@ export function registerSocketHandlers(io, roomManager) {
         maxPlayers,
         mode,
       });
-      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role);
+      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role, socket.data.userId);
       socket.join(room.code);
       roomManager.joinSocketToRoom(socket.id, room.code);
       ack?.({ ok: true, roomCode: room.code, room: room.toDTO(), yourPlayerId: player.id });
@@ -96,7 +96,7 @@ export function registerSocketHandlers(io, roomManager) {
       if (room.state !== 'lobby') return ack?.({ ok: false, error: 'ALREADY_STARTED' });
       if (room.isFull()) return ack?.({ ok: false, error: 'ROOM_FULL' });
 
-      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role);
+      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role, socket.data.userId);
       socket.join(room.code);
       roomManager.joinSocketToRoom(socket.id, room.code);
       socket.to(room.code).emit('room:playerJoined', { player: room.playerLobbyDTO(player) });
