@@ -5,6 +5,7 @@ import { Server } from 'socket.io';
 import { RoomManager } from './rooms/RoomManager.js';
 import { registerSocketHandlers } from './socket/handlers.js';
 import { authRouter } from './routes/auth.js';
+import { adminRouter } from './routes/admin.js';
 
 const PORT = process.env.PORT || 3001;
 
@@ -13,6 +14,7 @@ app.use(cors());
 app.use(express.json());
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/auth', authRouter);
+app.use('/admin', adminRouter);
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {

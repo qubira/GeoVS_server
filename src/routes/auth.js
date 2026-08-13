@@ -3,6 +3,7 @@ import { prisma } from '../db.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { signToken } from '../auth/tokens.js';
 import { requireAuth } from '../auth/middleware.js';
+import { logAudit, logAuditMany } from '../auth/audit.js';
 import {
   normalizeEmail,
   normalizeUsername,
@@ -42,9 +43,7 @@ authRouter.post('/register', async (req, res) => {
     data: { email, username, passwordHash, age: Number(age) },
   });
 
-  await prisma.auditLog.create({
-    data: { userId: user.id, field: 'account', newValue: 'created', reason: 'Registro de cuenta', changedBy: user.id },
-  });
+  await logAudit({ target: user, actor: user, field: 'account', newValue: 'created', reason: 'Registro de cuenta' });
 
   const token = signToken(user);
   res.status(201).json({ ok: true, token, user: toPublicUser(user) });
@@ -125,16 +124,16 @@ authRouter.put('/profile', requireAuth, async (req, res) => {
   const updated = await prisma.user.update({ where: { id: current.id }, data: updates });
 
   if (auditEntries.length) {
-    await prisma.auditLog.createMany({
-      data: auditEntries.map((entry) => ({
-        userId: current.id,
+    await logAuditMany(
+      auditEntries.map((entry) => ({
+        target: current,
+        actor: current,
         field: entry.field,
         oldValue: entry.oldValue,
         newValue: entry.newValue,
         reason: 'Edicion de perfil',
-        changedBy: current.id,
-      })),
-    });
+      }))
+    );
   }
 
   res.json({ ok: true, user: toPublicUser(updated) });

@@ -35,18 +35,26 @@ model User {
 
 // Historico de cambios: tanto ediciones de datos personales del propio
 // usuario como acciones de moderacion/administracion (bloqueo, cambio de
-// rol, etc.). `changedBy` guarda el id de quien hizo el cambio (puede ser
-// el propio usuario o un admin/moderador distinto).
+// rol, eliminacion, etc.). `changedBy` guarda el id de quien hizo el cambio
+// (puede ser el propio usuario o un admin/moderador distinto).
+//
+// userId es opcional y onDelete:SetNull a proposito: si se elimina la
+// cuenta, el registro de auditoria (incluyendo el de la propia eliminacion)
+// debe sobrevivir. `targetUsername`/`changedByUsername` guardan una copia
+// del nombre en el momento del cambio, para que el historial siga siendo
+// legible aunque alguna de las cuentas involucradas ya no exista.
 model AuditLog {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  field     String
-  oldValue  String?
-  newValue  String?
-  reason    String?
-  changedBy String?
-  changedAt DateTime @default(now())
+  id                String   @id @default(cuid())
+  userId            String?
+  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  targetUsername    String
+  field             String
+  oldValue          String?
+  newValue          String?
+  reason            String?
+  changedBy         String?
+  changedByUsername String?
+  changedAt         DateTime @default(now())
 
   @@map("audit_logs")
   @@index([userId])

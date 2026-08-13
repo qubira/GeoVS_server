@@ -19,3 +19,14 @@ export async function requireAuth(req, res, next) {
   req.user = user;
   next();
 }
+
+// Exige ademas que el rol de la cuenta este en la lista permitida. Se usa
+// despues de requireAuth (req.user ya debe existir). El panel de
+// administracion (GeoVS_Control) solo lo pueden usar 'admin' y 'moderator'.
+export function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'NO_TOKEN' });
+    if (!roles.includes(req.user.role)) return res.status(403).json({ error: 'FORBIDDEN' });
+    next();
+  };
+}
