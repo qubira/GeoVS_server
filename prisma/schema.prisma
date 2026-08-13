@@ -102,3 +102,54 @@ model PlaySession {
   @@index([startedAt])
   @@index([levelId])
 }
+
+// Pista/nivel creada desde el modulo "Crear" del panel de administracion.
+// Se agrega a los 3 niveles fijos (level1/2/3.json), no los reemplaza — ver
+// server/src/game/levels.js. `length` se recalcula siempre en el servidor a
+// partir de `speedX`/`durationSec`, nunca se confia en lo que mande el
+// cliente (es el campo que usa la fisica para decidir la meta).
+model CustomLevel {
+  id                 String   @id @default(cuid())
+  name               String
+  length             Int
+  durationSec        Int
+  speedX             Int?
+  jumpVelocity       Int?
+  backgroundImageUrl String?
+  musicUrl           String?
+  obstacles          Json
+  checkpoints        Json     @default("[0]")
+  createdBy          String
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("custom_levels")
+}
+
+// Imagen subida por un admin para usar como skin de un obstaculo, ademas de
+// los 3 PNG por defecto (spike/block/platform). `physicsType` sigue
+// determinando la colision — la imagen es puramente visual.
+model CustomObjectType {
+  id          String   @id @default(cuid())
+  name        String
+  imageUrl    String
+  physicsType String
+  createdBy   String
+  createdAt   DateTime @default(now())
+
+  @@map("custom_object_types")
+}
+
+// Imagen subida por un admin para usar como cara/skin del avatar cubo (el
+// unico tipo de avatar activo hoy). `kind` queda listo para otros tipos de
+// avatar (pies/nave/robot) que aun no tienen logica de juego definida.
+model CustomAvatar {
+  id        String   @id @default(cuid())
+  name      String
+  imageUrl  String
+  kind      String   @default("cube")
+  createdBy String
+  createdAt DateTime @default(now())
+
+  @@map("custom_avatars")
+}

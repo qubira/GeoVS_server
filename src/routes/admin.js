@@ -1,9 +1,12 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { prisma } from '../db.js';
 import { hashPassword } from '../auth/password.js';
 import { requireAuth, requireRole } from '../auth/middleware.js';
 import { logAudit, logAuditMany } from '../auth/audit.js';
-import { listLevels } from '../game/levels.js';
+import { listLevels, upsertCustomLevelInMemory, removeCustomLevelFromMemory } from '../game/levels.js';
+import { PHYSICS } from '../config.js';
+import { uploadBuffer } from '../utils/cloudinary.js';
 import {
   normalizeEmail,
   normalizeUsername,
@@ -361,6 +364,167 @@ adminRouter.get('/connections/by-country', async (req, res) => {
       durationSec: l.durationSec,
     })),
   });
+});
+
+// --- Modulo "Crear": avatares, objetos y niveles personalizados ---------
+
+const ALLOWED_UPLOAD_KINDS = {
+  avatar: /^image\//,
+  object: /^image\//,
+  background: /^image\//,
+  music: /^audio\//,
+};
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+
+adminRouter.post('/uploads', upload.single('file'), async (req, res) => {
+  const kind = String(req.body?.kind || '');
+  const mimePattern = ALLOWED_UPLOAD_KINDS[kind];
+  if (!mimePattern) return res.status(400).json({ error: 'INVALID_KIND' });
+  if (!req.file) return res.status(400).json({ error: 'NO_FILE' });
+  if (!mimePattern.test(req.file.mimetype)) return res.status(400).json({ error: 'INVALID_FILE_TYPE' });
+
+  try {
+    const result = await uploadBuffer(req.file.buffer, kind);
+    res.status(201).json({ ok: true, url: result.secure_url });
+  } catch (err) {
+    console.error('Error subiendo archivo a Cloudinary:', err);
+    res.status(502).json({ error: 'UPLOAD_FAILED' });
+  }
+});
+
+// --- Avatares personalizados ---------------------------------------------
+
+adminRouter.get('/custom-avatars', async (_req, res) => {
+  const avatars = await prisma.customAvatar.findMany({ orderBy: { createdAt: 'desc' } });
+  res.json({ ok: true, avatars });
+});
+
+adminRouter.post('/custom-avatars', async (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 60);
+  const imageUrl = String(req.body?.imageUrl || '').trim();
+  if (!name) return res.status(400).json({ error: 'INVALID_NAME' });
+  if (!imageUrl) return res.status(400).json({ error: 'INVALID_IMAGE' });
+  const avatar = await prisma.customAvatar.create({ data: { name, imageUrl, createdBy: req.user.id } });
+  res.status(201).json({ ok: true, avatar });
+});
+
+adminRouter.delete('/custom-avatars/:id', async (req, res) => {
+  await prisma.customAvatar.delete({ where: { id: req.params.id } }).catch(() => null);
+  res.json({ ok: true });
+});
+
+// --- Tipos de objeto personalizados ---------------------------------------
+
+const PHYSICS_TYPES = ['spike', 'block', 'platform'];
+
+adminRouter.get('/custom-object-types', async (_req, res) => {
+  const objectTypes = await prisma.customObjectType.findMany({ orderBy: { createdAt: 'desc' } });
+  res.json({ ok: true, objectTypes });
+});
+
+adminRouter.post('/custom-object-types', async (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 60);
+  const imageUrl = String(req.body?.imageUrl || '').trim();
+  const physicsType = String(req.body?.physicsType || '');
+  if (!name) return res.status(400).json({ error: 'INVALID_NAME' });
+  if (!imageUrl) return res.status(400).json({ error: 'INVALID_IMAGE' });
+  if (!PHYSICS_TYPES.includes(physicsType)) return res.status(400).json({ error: 'INVALID_PHYSICS_TYPE' });
+  const objectType = await prisma.customObjectType.create({ data: { name, imageUrl, physicsType, createdBy: req.user.id } });
+  res.status(201).json({ ok: true, objectType });
+});
+
+adminRouter.delete('/custom-object-types/:id', async (req, res) => {
+  await prisma.customObjectType.delete({ where: { id: req.params.id } }).catch(() => null);
+  res.json({ ok: true });
+});
+
+// --- Pistas/niveles personalizados -----------------------------------------
+
+// `length` SIEMPRE se recalcula en el servidor a partir de speedX/durationSec
+// — nunca se confia en uno que mande el cliente, es el campo que la fisica
+// usa para decidir la meta (ver game/PhysicsEngine.js).
+function computeLength(speedX, durationSec) {
+  return Math.round((speedX ?? PHYSICS.SPEED_X) * durationSec);
+}
+
+function validateLevelBody(body) {
+  const name = String(body?.name || '').trim().slice(0, 60);
+  const durationSec = Number(body?.durationSec);
+  const speedX = body?.speedX !== undefined && body.speedX !== null && body.speedX !== '' ? Number(body.speedX) : null;
+  const jumpVelocity = body?.jumpVelocity !== undefined && body.jumpVelocity !== null && body.jumpVelocity !== '' ? Number(body.jumpVelocity) : null;
+  const obstacles = Array.isArray(body?.obstacles) ? body.obstacles : null;
+  const checkpoints = Array.isArray(body?.checkpoints) ? body.checkpoints : [0];
+
+  if (!name) return { error: 'INVALID_NAME' };
+  if (!Number.isFinite(durationSec) || durationSec < 5 || durationSec > 600) return { error: 'INVALID_DURATION' };
+  if (speedX !== null && (!Number.isFinite(speedX) || speedX < 100 || speedX > 1200)) return { error: 'INVALID_SPEED' };
+  if (jumpVelocity !== null && (!Number.isFinite(jumpVelocity) || jumpVelocity > -300 || jumpVelocity < -2000)) return { error: 'INVALID_JUMP' };
+  if (!obstacles) return { error: 'INVALID_OBSTACLES' };
+  for (const o of obstacles) {
+    if (!PHYSICS_TYPES.includes(o?.type)) return { error: 'INVALID_OBSTACLE_TYPE' };
+    if (![o.x, o.y, o.w, o.h].every((n) => Number.isFinite(Number(n)))) return { error: 'INVALID_OBSTACLE_SHAPE' };
+  }
+
+  const length = computeLength(speedX, durationSec);
+  if (obstacles.some((o) => Number(o.x) + Number(o.w) > length)) {
+    return { error: 'OBSTACLE_OUT_OF_BOUNDS' };
+  }
+
+  return {
+    data: {
+      name,
+      durationSec: Math.round(durationSec),
+      speedX,
+      jumpVelocity,
+      length,
+      backgroundImageUrl: body?.backgroundImageUrl ? String(body.backgroundImageUrl).trim() : null,
+      musicUrl: body?.musicUrl ? String(body.musicUrl).trim() : null,
+      obstacles: obstacles.map((o) => ({
+        type: o.type,
+        x: Math.round(Number(o.x)),
+        y: Math.round(Number(o.y)),
+        w: Math.round(Number(o.w)),
+        h: Math.round(Number(o.h)),
+        ...(o.imageUrl ? { imageUrl: String(o.imageUrl) } : {}),
+      })),
+      checkpoints,
+    },
+  };
+}
+
+adminRouter.get('/custom-levels', async (_req, res) => {
+  const levels = await prisma.customLevel.findMany({ orderBy: { createdAt: 'desc' } });
+  res.json({ ok: true, levels });
+});
+
+adminRouter.get('/custom-levels/:id', async (req, res) => {
+  const level = await prisma.customLevel.findUnique({ where: { id: req.params.id } });
+  if (!level) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.json({ ok: true, level });
+});
+
+adminRouter.post('/custom-levels', async (req, res) => {
+  const { data, error } = validateLevelBody(req.body);
+  if (error) return res.status(400).json({ error });
+  const level = await prisma.customLevel.create({ data: { ...data, createdBy: req.user.id } });
+  upsertCustomLevelInMemory(level);
+  res.status(201).json({ ok: true, level });
+});
+
+adminRouter.put('/custom-levels/:id', async (req, res) => {
+  const current = await prisma.customLevel.findUnique({ where: { id: req.params.id } });
+  if (!current) return res.status(404).json({ error: 'NOT_FOUND' });
+  const { data, error } = validateLevelBody(req.body);
+  if (error) return res.status(400).json({ error });
+  const level = await prisma.customLevel.update({ where: { id: current.id }, data });
+  upsertCustomLevelInMemory(level);
+  res.json({ ok: true, level });
+});
+
+adminRouter.delete('/custom-levels/:id', async (req, res) => {
+  await prisma.customLevel.delete({ where: { id: req.params.id } }).catch(() => null);
+  removeCustomLevelFromMemory(req.params.id);
+  res.json({ ok: true });
 });
 
 // --- Lista de espera (landing page) --------------------------------------

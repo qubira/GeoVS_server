@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { CONFIG, PHYSICS } from '../config.js';
 import { stepPlayer, makeInitialPlayerState } from '../game/PhysicsEngine.js';
-import { getLevel } from '../game/levels.js';
+import { getLevel, DEFAULT_LEVEL_ID } from '../game/levels.js';
 import { GameLoop } from '../game/GameLoop.js';
 import { prisma } from '../db.js';
 
@@ -83,7 +83,7 @@ export class Room {
     return !!token && token === this.hostId;
   }
 
-  addPlayer(socketId, name, faceState, country, countryCode, role, userId) {
+  addPlayer(socketId, name, faceState, country, countryCode, role, userId, avatarImageUrl) {
     const token = randomUUID();
     const color = CONFIG.PLAYER_COLORS[this.players.size % CONFIG.PLAYER_COLORS.length];
     const player = {
@@ -106,6 +106,10 @@ export class Room {
       // PlaySession al empezar a jugar (ver startGame/_openPlaySession mas
       // abajo) — sin cuenta no hay a quien atribuirle la metrica.
       userId: userId || null,
+      // Imagen personalizada subida desde el modulo "Crear" del panel (ver
+      // routes/content.js). null = usa el sistema de caras integrado de
+      // siempre (ver client web src/components/PlayerCube.ts).
+      avatarImageUrl: avatarImageUrl || null,
       // Promesa del PlaySession abierto mientras este jugador esta jugando
       // activamente esta ronda (null si no esta jugando o no tiene cuenta).
       playSessionOpen: null,
@@ -229,7 +233,10 @@ export class Room {
   }
 
   startGame() {
-    this.level = getLevel(this.levelId);
+    // Si la pista personalizada seleccionada se borro desde el panel
+    // mientras el lobby la tenia elegida, cae a Nivel 1 en vez de tumbar la
+    // ronda (getLevel devolveria null y stepPlayer/tick reventarian).
+    this.level = getLevel(this.levelId) || getLevel(DEFAULT_LEVEL_ID);
     for (const player of this.players.values()) {
       Object.assign(player, makeInitialPlayerState());
     }
@@ -442,6 +449,7 @@ export class Room {
       name: p.name,
       color: p.color,
       faceState: p.faceState || 'neutral',
+      avatarImageUrl: p.avatarImageUrl || null,
       country: p.country || null,
       countryCode: p.countryCode || null,
       role: p.role || null,

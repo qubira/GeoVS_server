@@ -59,8 +59,12 @@ export function stepPlayer(player, input, dt, level) {
 
   const prevBottom = player.y + PLAYER_SIZE - HITBOX_MARGIN;
 
-  // Avance horizontal constante (estilo Geometry Dash: la camara/nivel corre solo)
-  player.x += SPEED_X * dt;
+  // Avance horizontal constante (estilo Geometry Dash: la camara/nivel corre
+  // solo). Las pistas creadas desde el panel pueden traer su propia
+  // velocidad/salto (level.speedX/level.jumpVelocity); si no, se usan los
+  // valores globales de siempre. ESPEJO EXACTO de PhysicsEngine.ts del
+  // cliente web — cualquier cambio aca debe replicarse ahi.
+  player.x += (level.speedX ?? SPEED_X) * dt;
 
   // Gravedad y salto (con doble salto: solo se dispara en el flanco de
   // subida del input, para no reusar la misma pulsacion mantenida)
@@ -68,7 +72,7 @@ export function stepPlayer(player, input, dt, level) {
   const jumpPressed = input.jumpHeld && !player.prevJumpHeld;
   player.prevJumpHeld = input.jumpHeld;
   if (jumpPressed && player.jumpsUsed < MAX_JUMPS) {
-    player.vy = JUMP_VELOCITY;
+    player.vy = level.jumpVelocity ?? JUMP_VELOCITY;
     player.grounded = false;
     player.jumpsUsed += 1;
   }

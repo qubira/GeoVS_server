@@ -23,8 +23,9 @@ export function registerSocketHandlers(io, roomManager) {
     socket.data.userId = null;
     socket.data.role = null;
     socket.data.connectionLogId = null;
+    socket.data.avatarImageUrl = null;
 
-    socket.on('player:identify', async ({ name, faceState, token } = {}, ack) => {
+    socket.on('player:identify', async ({ name, faceState, token, avatarImageUrl } = {}, ack) => {
       // Si viene un token de sesion valido (cliente web con cuenta), la
       // identidad la manda la cuenta: se ignora el nombre libre y se usa el
       // username real + rol desde la base. Sin token (app movil, o invitado)
@@ -45,6 +46,11 @@ export function registerSocketHandlers(io, roomManager) {
       socket.data.userId = account?.id || null;
       socket.data.role = account?.role || null;
       if (FACE_STATES.has(faceState)) socket.data.faceState = faceState;
+      // Avatar cubo personalizado subido desde el panel (ver
+      // routes/content.js). Se acepta cualquier string razonable — es solo
+      // una URL que el cliente usara como src de imagen, cap de longitud
+      // por las dudas ya que llega sin validar desde el cliente.
+      socket.data.avatarImageUrl = typeof avatarImageUrl === 'string' && avatarImageUrl.trim() ? avatarImageUrl.trim().slice(0, 500) : null;
 
       // Resuelve pais por IP una sola vez por conexion (se cachea por IP en
       // geoip.js). No bloquea si falla: el jugador queda sin pais (null).
@@ -83,7 +89,7 @@ export function registerSocketHandlers(io, roomManager) {
         maxPlayers,
         mode,
       });
-      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role, socket.data.userId);
+      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role, socket.data.userId, socket.data.avatarImageUrl);
       socket.join(room.code);
       roomManager.joinSocketToRoom(socket.id, room.code);
       ack?.({ ok: true, roomCode: room.code, room: room.toDTO(), yourPlayerId: player.id });
@@ -96,7 +102,7 @@ export function registerSocketHandlers(io, roomManager) {
       if (room.state !== 'lobby') return ack?.({ ok: false, error: 'ALREADY_STARTED' });
       if (room.isFull()) return ack?.({ ok: false, error: 'ROOM_FULL' });
 
-      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role, socket.data.userId);
+      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role, socket.data.userId, socket.data.avatarImageUrl);
       socket.join(room.code);
       roomManager.joinSocketToRoom(socket.id, room.code);
       socket.to(room.code).emit('room:playerJoined', { player: room.playerLobbyDTO(player) });

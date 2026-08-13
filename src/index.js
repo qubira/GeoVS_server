@@ -6,6 +6,8 @@ import { RoomManager } from './rooms/RoomManager.js';
 import { registerSocketHandlers } from './socket/handlers.js';
 import { authRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
+import { contentRouter } from './routes/content.js';
+import { loadCustomLevelsFromDb } from './game/levels.js';
 
 const PORT = process.env.PORT || 3001;
 
@@ -15,6 +17,7 @@ app.use(express.json());
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/auth', authRouter);
 app.use('/admin', adminRouter);
+app.use('/content', contentRouter);
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -23,6 +26,10 @@ const io = new Server(httpServer, {
 
 const roomManager = new RoomManager(io);
 registerSocketHandlers(io, roomManager);
+
+// Pistas creadas desde el panel (ver game/levels.js) — se cargan antes de
+// aceptar conexiones para que esten disponibles desde el primer room:create.
+await loadCustomLevelsFromDb();
 
 httpServer.listen(PORT, () => {
   console.log(`Servidor Geometry Dash Multi escuchando en http://localhost:${PORT}`);
