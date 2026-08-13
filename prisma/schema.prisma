@@ -119,6 +119,12 @@ model CustomLevel {
   musicUrl           String?
   obstacles          Json
   checkpoints        Json     @default("[0]")
+  // Empieza en false (borrador): mientras no se publique, no aparece en el
+  // listado de niveles del juego ni la puede seleccionar ningun jugador.
+  // Publicar/despublicar es una accion separada de guardar (ver
+  // PUT /admin/custom-levels/:id/publish), asi el admin puede seguir
+  // editando sin que una pista a medio armar quede jugable por error.
+  published          Boolean  @default(false)
   createdBy          String
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
@@ -148,6 +154,10 @@ model CustomAvatar {
   name      String
   imageUrl  String
   kind      String   @default("cube")
+  // Igual que CustomLevel.published: borrador hasta que se publica
+  // explicitamente (ver /content/custom-avatars, que solo expone los ya
+  // publicados a los jugadores).
+  published Boolean  @default(false)
   createdBy String
   createdAt DateTime @default(now())
 

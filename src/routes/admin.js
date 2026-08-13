@@ -4,7 +4,7 @@ import { prisma } from '../db.js';
 import { hashPassword } from '../auth/password.js';
 import { requireAuth, requireRole } from '../auth/middleware.js';
 import { logAudit, logAuditMany } from '../auth/audit.js';
-import { listLevels, upsertCustomLevelInMemory, removeCustomLevelFromMemory } from '../game/levels.js';
+import { listLevels, syncCustomLevelInMemory, removeCustomLevelFromMemory } from '../game/levels.js';
 import { PHYSICS } from '../config.js';
 import { uploadBuffer } from '../utils/cloudinary.js';
 import {
@@ -404,8 +404,17 @@ adminRouter.post('/custom-avatars', async (req, res) => {
   const imageUrl = String(req.body?.imageUrl || '').trim();
   if (!name) return res.status(400).json({ error: 'INVALID_NAME' });
   if (!imageUrl) return res.status(400).json({ error: 'INVALID_IMAGE' });
+  // Siempre arranca como borrador (published:false) — publicar es una accion
+  // separada (ver /publish mas abajo), asi no queda jugable por accidente.
   const avatar = await prisma.customAvatar.create({ data: { name, imageUrl, createdBy: req.user.id } });
   res.status(201).json({ ok: true, avatar });
+});
+
+adminRouter.put('/custom-avatars/:id/publish', async (req, res) => {
+  const published = Boolean(req.body?.published);
+  const avatar = await prisma.customAvatar.update({ where: { id: req.params.id }, data: { published } }).catch(() => null);
+  if (!avatar) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.json({ ok: true, avatar });
 });
 
 adminRouter.delete('/custom-avatars/:id', async (req, res) => {
@@ -506,8 +515,10 @@ adminRouter.get('/custom-levels/:id', async (req, res) => {
 adminRouter.post('/custom-levels', async (req, res) => {
   const { data, error } = validateLevelBody(req.body);
   if (error) return res.status(400).json({ error });
+  // Arranca como borrador (published:false, default del schema) — no la
+  // sincronizamos como "visible" hasta que se publique explicitamente.
   const level = await prisma.customLevel.create({ data: { ...data, createdBy: req.user.id } });
-  upsertCustomLevelInMemory(level);
+  syncCustomLevelInMemory(level);
   res.status(201).json({ ok: true, level });
 });
 
@@ -516,8 +527,18 @@ adminRouter.put('/custom-levels/:id', async (req, res) => {
   if (!current) return res.status(404).json({ error: 'NOT_FOUND' });
   const { data, error } = validateLevelBody(req.body);
   if (error) return res.status(400).json({ error });
+  // No toca `published`: editar una pista publicada la mantiene publicada
+  // (con el contenido nuevo), editar un borrador lo mantiene en borrador.
   const level = await prisma.customLevel.update({ where: { id: current.id }, data });
-  upsertCustomLevelInMemory(level);
+  syncCustomLevelInMemory(level);
+  res.json({ ok: true, level });
+});
+
+adminRouter.put('/custom-levels/:id/publish', async (req, res) => {
+  const published = Boolean(req.body?.published);
+  const level = await prisma.customLevel.update({ where: { id: req.params.id }, data: { published } }).catch(() => null);
+  if (!level) return res.status(404).json({ error: 'NOT_FOUND' });
+  syncCustomLevelInMemory(level);
   res.json({ ok: true, level });
 });
 

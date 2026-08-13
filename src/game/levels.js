@@ -43,9 +43,11 @@ function rowToLevel(row) {
 
 export async function loadCustomLevelsFromDb() {
   try {
-    const rows = await prisma.customLevel.findMany();
+    // Solo las publicadas: un borrador a medio armar no debe quedar
+    // seleccionable por ningun jugador (ver CustomLevel.published).
+    const rows = await prisma.customLevel.findMany({ where: { published: true } });
     for (const row of rows) customLevels.set(row.id, rowToLevel(row));
-    console.log(`Pistas personalizadas cargadas: ${rows.length}`);
+    console.log(`Pistas personalizadas publicadas cargadas: ${rows.length}`);
   } catch (err) {
     // Si Neon falla al arrancar, el juego sigue funcionando con los 3
     // niveles fijos (no dependen de la base de datos).
@@ -57,8 +59,14 @@ export async function loadCustomLevelsFromDb() {
 // nunca mutar el objeto existente in place — una Room en curso ya tiene una
 // referencia directa a ese objeto (this.level) y mutarlo movería obstaculos
 // bajo los pies de un jugador a media partida.
-export function upsertCustomLevelInMemory(row) {
-  customLevels.set(row.id, rowToLevel(row));
+//
+// Se llama despues de CUALQUIER escritura en Postgres (crear/editar/
+// publicar/despublicar): si la fila quedo publicada, entra o se actualiza
+// en el registro en memoria; si no (borrador o recien despublicada), se
+// saca de ahi para que deje de aparecer en listLevels()/getLevel().
+export function syncCustomLevelInMemory(row) {
+  if (row.published) customLevels.set(row.id, rowToLevel(row));
+  else customLevels.delete(row.id);
 }
 
 export function removeCustomLevelFromMemory(id) {
