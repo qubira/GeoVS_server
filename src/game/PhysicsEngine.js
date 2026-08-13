@@ -9,6 +9,11 @@ const { GRAVITY, JUMP_VELOCITY, MAX_FALL_SPEED, SPEED_X, PLAYER_SIZE, GROUND_Y }
 // completo). No afecta el suelo ni el tamano visual, solo esta comprobacion.
 const HITBOX_MARGIN = 6;
 
+// Doble salto: el jugador puede saltar una vez mas en el aire (sin volver a
+// tocar el suelo) para alcanzar plataformas altas. Se resetea a 0 cada vez
+// que aterriza (suelo o encima de un bloque/plataforma).
+const MAX_JUMPS = 2;
+
 // Resuelve la colision de un jugador contra UN obstaculo (AABB con margen de
 // perdon). prevBottom: borde inferior "de perdon" del jugador ANTES de
 // moverse este tick, se usa para distinguir "aterrizar encima" (seguro) de
@@ -57,11 +62,15 @@ export function stepPlayer(player, input, dt, level) {
   // Avance horizontal constante (estilo Geometry Dash: la camara/nivel corre solo)
   player.x += SPEED_X * dt;
 
-  // Gravedad y salto
+  // Gravedad y salto (con doble salto: solo se dispara en el flanco de
+  // subida del input, para no reusar la misma pulsacion mantenida)
   player.vy = Math.min(player.vy + GRAVITY * dt, MAX_FALL_SPEED);
-  if (input.jumpHeld && player.grounded) {
+  const jumpPressed = input.jumpHeld && !player.prevJumpHeld;
+  player.prevJumpHeld = input.jumpHeld;
+  if (jumpPressed && player.jumpsUsed < MAX_JUMPS) {
     player.vy = JUMP_VELOCITY;
     player.grounded = false;
+    player.jumpsUsed += 1;
   }
   player.y += player.vy * dt;
 
@@ -71,6 +80,7 @@ export function stepPlayer(player, input, dt, level) {
     player.y = GROUND_Y - PLAYER_SIZE;
     player.vy = 0;
     player.grounded = true;
+    player.jumpsUsed = 0;
   }
 
   // Colision con obstaculos del nivel (solo los cercanos en X, por rendimiento)
@@ -89,6 +99,7 @@ export function stepPlayer(player, input, dt, level) {
       player.y = result.landY;
       player.vy = 0;
       player.grounded = true;
+      player.jumpsUsed = 0;
     }
   }
 
@@ -111,6 +122,8 @@ export function makeInitialPlayerState() {
     y: GROUND_Y - PLAYER_SIZE,
     vy: 0,
     grounded: true,
+    jumpsUsed: 0,
+    prevJumpHeld: false,
     alive: true,
     eliminated: false,
     finished: false,
