@@ -15,27 +15,43 @@ const HITBOX_MARGIN = 6;
 const MAX_JUMPS = 2;
 
 // Resuelve la colision de un jugador contra UN obstaculo (AABB con margen de
-// perdon). prevBottom: borde inferior "de perdon" del jugador ANTES de
-// moverse este tick, se usa para distinguir "aterrizar encima" (seguro) de
-// "chocar de lado" (muerte).
-function resolveObstacle(player, obstacle, prevBottom) {
+// perdon). `prevY` es la posicion Y del jugador ANTES de moverse este tick.
+//
+// El chequeo vertical es un barrido (swept), no solo la posicion final: a
+// velocidades altas (caida rapida, MAX_FALL_SPEED=1800px/s -> 30px por tick
+// a 60Hz) el jugador puede recorrer en UN tick mas distancia que el alto de
+// un objeto fino (una plataforma de 20px, por ejemplo), asi que comparar
+// solo la posicion final podia no detectar overlap nunca — el jugador
+// "traspasaba" el objeto de un salto entre dos ticks. Usar el rango
+// [min(prevY,newY) .. max(prevY,newY)] para el chequeo vertical evita eso
+// sin importar que tan rapido se mueva.
+function resolveObstacle(player, obstacle, prevY) {
   const left = player.x + HITBOX_MARGIN;
   const right = player.x + PLAYER_SIZE - HITBOX_MARGIN;
-  const top = player.y + HITBOX_MARGIN;
-  const bottom = player.y + PLAYER_SIZE - HITBOX_MARGIN;
   const obsLeft = obstacle.x;
   const obsRight = obstacle.x + obstacle.w;
   const obsTop = obstacle.y;
   const obsBottom = obstacle.y + obstacle.h;
 
-  const overlaps = right > obsLeft && left < obsRight && bottom > obsTop && top < obsBottom;
-  if (!overlaps) return null;
+  const horizontalOverlap = right > obsLeft && left < obsRight;
+  if (!horizontalOverlap) return null;
+
+  const prevTop = prevY + HITBOX_MARGIN;
+  const prevBottom = prevY + PLAYER_SIZE - HITBOX_MARGIN;
+  const newTop = player.y + HITBOX_MARGIN;
+  const newBottom = player.y + PLAYER_SIZE - HITBOX_MARGIN;
+  const sweepTop = Math.min(prevTop, newTop);
+  const sweepBottom = Math.max(prevBottom, newBottom);
+  const verticalHit = sweepBottom > obsTop && sweepTop < obsBottom;
+  if (!verticalHit) return null;
 
   if (obstacle.type === 'spike') {
     return { type: 'death' };
   }
 
-  // block / platform: solo es seguro si el jugador caia y estaba por encima
+  // block / platform: solo es seguro si el jugador caia y su punto mas bajo,
+  // ANTES de moverse este tick, ya estaba a la altura de la superficie o por
+  // encima (evita "aterrizar" si veniamos de atravesar desde abajo).
   const wasAbove = prevBottom <= obsTop + 1 && player.vy >= 0;
   if (wasAbove) {
     return { type: 'land', landY: obsTop - PLAYER_SIZE };
@@ -57,7 +73,7 @@ export function stepPlayer(player, input, dt, level) {
     return events;
   }
 
-  const prevBottom = player.y + PLAYER_SIZE - HITBOX_MARGIN;
+  const prevY = player.y;
 
   // Avance horizontal constante (estilo Geometry Dash: la camara/nivel corre
   // solo). Las pistas creadas desde el panel pueden traer su propia
@@ -92,7 +108,7 @@ export function stepPlayer(player, input, dt, level) {
     if (obstacle.x + obstacle.w < player.x - 50 || obstacle.x > player.x + PLAYER_SIZE + 50) {
       continue;
     }
-    const result = resolveObstacle(player, obstacle, prevBottom);
+    const result = resolveObstacle(player, obstacle, prevY);
     if (!result) continue;
     if (result.type === 'death') {
       player.alive = false;
