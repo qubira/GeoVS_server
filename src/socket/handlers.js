@@ -74,6 +74,17 @@ export function registerSocketHandlers(io, roomManager) {
       }
     });
 
+    // Cambiar de avatar (tienda del lobby) sin re-emitir todo player:identify
+    // — ese evento crea una fila nueva de ConnectionLog cada vez que se
+    // llama, que quedaria huerfana (sin cerrar) si se usara aca para algo
+    // que puede pasar varias veces por sesion. Este evento solo actualiza
+    // los dos campos, sin tocar la base de datos.
+    socket.on('player:updateAvatar', ({ faceState, avatarImageUrl } = {}, ack) => {
+      if (FACE_STATES.has(faceState)) socket.data.faceState = faceState;
+      socket.data.avatarImageUrl = typeof avatarImageUrl === 'string' && avatarImageUrl.trim() ? avatarImageUrl.trim().slice(0, 500) : null;
+      ack?.({ ok: true });
+    });
+
     socket.on('levels:list', (_payload, ack) => {
       ack?.({ levels: listLevels() });
     });
