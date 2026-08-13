@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+enum Role {
+  player
+  developer
+  moderator
+  admin
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  username     String    @unique
+  passwordHash String
+  age          Int
+  role         Role      @default(player)
+  blocked      Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  lastLoginAt  DateTime?
+
+  auditLogs      AuditLog[]
+  connectionLogs ConnectionLog[]
+
+  @@map("users")
+}
+
+// Historico de cambios: tanto ediciones de datos personales del propio
+// usuario como acciones de moderacion/administracion (bloqueo, cambio de
+// rol, etc.). `changedBy` guarda el id de quien hizo el cambio (puede ser
+// el propio usuario o un admin/moderador distinto).
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  field     String
+  oldValue  String?
+  newValue  String?
+  reason    String?
+  changedBy String?
+  changedAt DateTime @default(now())
+
+  @@map("audit_logs")
+  @@index([userId])
+}
+
+// Una fila por conexion (socket) de un usuario autenticado. Permite calcular
+// tiempo de conexion acumulado total y por dia, y de donde se conecta
+// (IP/pais) para el panel de administracion.
+model ConnectionLog {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ip             String?
+  country        String?
+  countryCode    String?
+  connectedAt    DateTime  @default(now())
+  disconnectedAt DateTime?
+  durationSec    Int?
+
+  @@map("connection_logs")
+  @@index([userId])
+  @@index([connectedAt])
+}

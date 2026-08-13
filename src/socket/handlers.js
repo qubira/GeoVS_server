@@ -1,6 +1,8 @@
 import { CONFIG } from '../config.js';
 import { DEFAULT_LEVEL_ID, listLevels } from '../game/levels.js';
 import { lookupCountry, clientIpFromSocket } from '../utils/geoip.js';
+import { verifyToken } from '../auth/tokens.js';
+import { prisma } from '../db.js';
 
 // Registra todos los listeners de socket.io. El servidor es la autoridad: cada
 // handler valida el estado de la sala/host antes de aplicar un cambio, nunca
@@ -18,10 +20,30 @@ export function registerSocketHandlers(io, roomManager) {
     socket.data.faceState = 'neutral';
     socket.data.country = null;
     socket.data.countryCode = null;
+    socket.data.userId = null;
+    socket.data.role = null;
+    socket.data.connectionLogId = null;
 
-    socket.on('player:identify', async ({ name, faceState } = {}, ack) => {
-      const clean = String(name || '').trim().slice(0, 16) || `Jugador-${socket.id.slice(0, 4)}`;
+    socket.on('player:identify', async ({ name, faceState, token } = {}, ack) => {
+      // Si viene un token de sesion valido (cliente web con cuenta), la
+      // identidad la manda la cuenta: se ignora el nombre libre y se usa el
+      // username real + rol desde la base. Sin token (app movil, o invitado)
+      // se mantiene el flujo anonimo de siempre.
+      let account = null;
+      if (token) {
+        const payload = verifyToken(token);
+        if (payload) {
+          const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+          if (user && !user.blocked) account = user;
+        }
+      }
+
+      const clean = account
+        ? account.username
+        : String(name || '').trim().slice(0, 16) || `Jugador-${socket.id.slice(0, 4)}`;
       socket.data.name = clean;
+      socket.data.userId = account?.id || null;
+      socket.data.role = account?.role || null;
       if (FACE_STATES.has(faceState)) socket.data.faceState = faceState;
 
       // Resuelve pais por IP una sola vez por conexion (se cachea por IP en
@@ -30,7 +52,20 @@ export function registerSocketHandlers(io, roomManager) {
       socket.data.country = geo.country;
       socket.data.countryCode = geo.countryCode;
 
-      ack?.({ ok: true, playerId: socket.id });
+      // Registro de tiempo de conexion, solo para cuentas reales (ver
+      // handleLeave para el cierre de esta fila al desconectar).
+      if (account) {
+        const log = await prisma.connectionLog.create({
+          data: { userId: account.id, ip: clientIpFromSocket(socket), country: geo.country, countryCode: geo.countryCode },
+        });
+        socket.data.connectionLogId = log.id;
+      }
+
+      if (account) {
+        ack?.({ ok: true, playerId: socket.id, account: { id: account.id, username: account.username, role: account.role } });
+      } else {
+        ack?.({ ok: true, playerId: socket.id });
+      }
     });
 
     socket.on('levels:list', (_payload, ack) => {
@@ -48,7 +83,7 @@ export function registerSocketHandlers(io, roomManager) {
         maxPlayers,
         mode,
       });
-      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode);
+      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role);
       socket.join(room.code);
       roomManager.joinSocketToRoom(socket.id, room.code);
       ack?.({ ok: true, roomCode: room.code, room: room.toDTO(), yourPlayerId: player.id });
@@ -61,7 +96,7 @@ export function registerSocketHandlers(io, roomManager) {
       if (room.state !== 'lobby') return ack?.({ ok: false, error: 'ALREADY_STARTED' });
       if (room.isFull()) return ack?.({ ok: false, error: 'ROOM_FULL' });
 
-      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode);
+      const player = room.addPlayer(socket.id, socket.data.name, socket.data.faceState, socket.data.country, socket.data.countryCode, socket.data.role);
       socket.join(room.code);
       roomManager.joinSocketToRoom(socket.id, room.code);
       socket.to(room.code).emit('room:playerJoined', { player: room.playerLobbyDTO(player) });
@@ -160,8 +195,26 @@ export function registerSocketHandlers(io, roomManager) {
 
     socket.on('disconnect', () => {
       handleLeave(io, roomManager, socket);
+      closeConnectionLog(socket);
     });
   });
+}
+
+// Cierra la fila de ConnectionLog abierta en player:identify, calculando la
+// duracion de la conexion. Solo aplica a cuentas autenticadas.
+async function closeConnectionLog(socket) {
+  const logId = socket.data.connectionLogId;
+  if (!logId) return;
+  socket.data.connectionLogId = null;
+  const disconnectedAt = new Date();
+  try {
+    const log = await prisma.connectionLog.findUnique({ where: { id: logId } });
+    if (!log) return;
+    const durationSec = Math.max(0, Math.round((disconnectedAt - log.connectedAt) / 1000));
+    await prisma.connectionLog.update({ where: { id: logId }, data: { disconnectedAt, durationSec } });
+  } catch (err) {
+    console.error('Error cerrando connection log:', err);
+  }
 }
 
 function handleLeave(io, roomManager, socket) {

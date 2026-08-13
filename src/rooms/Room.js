@@ -82,7 +82,7 @@ export class Room {
     return !!token && token === this.hostId;
   }
 
-  addPlayer(socketId, name, faceState, country, countryCode) {
+  addPlayer(socketId, name, faceState, country, countryCode, role) {
     const token = randomUUID();
     const color = CONFIG.PLAYER_COLORS[this.players.size % CONFIG.PLAYER_COLORS.length];
     const player = {
@@ -98,6 +98,9 @@ export class Room {
       // (IP local/privada, o la consulta fallo).
       country: country || null,
       countryCode: countryCode || null,
+      // Rol de la cuenta (player/developer/moderator/admin). null si es una
+      // sesion anonima (sin cuenta, p. ej. la app movil todavia sin login).
+      role: role || null,
       ready: false,
       connected: true,
       ...makeInitialPlayerState(),
@@ -369,6 +372,7 @@ export class Room {
       faceState: p.faceState || 'neutral',
       country: p.country || null,
       countryCode: p.countryCode || null,
+      role: p.role || null,
       ready: p.ready,
       connected: p.connected,
     };

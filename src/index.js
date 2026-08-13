@@ -4,12 +4,15 @@ import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import { RoomManager } from './rooms/RoomManager.js';
 import { registerSocketHandlers } from './socket/handlers.js';
+import { authRouter } from './routes/auth.js';
 
 const PORT = process.env.PORT || 3001;
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 app.get('/health', (_req, res) => res.json({ ok: true }));
+app.use('/auth', authRouter);
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
