@@ -7,6 +7,7 @@ import { logAudit, logAuditMany } from '../auth/audit.js';
 import { listLevels, syncCustomLevelInMemory, removeCustomLevelFromMemory } from '../game/levels.js';
 import { PHYSICS } from '../config.js';
 import { uploadBuffer } from '../utils/cloudinary.js';
+import { kickUser } from '../moderation/kick.js';
 import {
   normalizeEmail,
   normalizeUsername,
@@ -395,6 +396,136 @@ adminRouter.get('/chat-messages', async (req, res) => {
     prisma.chatMessage.count({ where }),
   ]);
   res.json({ ok: true, messages, total, page, pageSize });
+});
+
+// --- Moderacion: bloqueo, alertas y motivos ------------------------------
+// Mismo gate que Conversaciones (admin/moderator, no developer).
+const WARNING_LIMIT = 3;
+adminRouter.use(['/moderation', '/account-blocks', '/block-reasons'], requireRole('admin', 'moderator'));
+
+async function snapshotMessage(messageId) {
+  if (!messageId) return null;
+  const msg = await prisma.chatMessage.findUnique({ where: { id: messageId } });
+  return msg?.text || null;
+}
+
+// Bloquea una cuenta: crea el historial (AccountBlock), marca User.blocked
+// (eso es lo que ya rechaza el login desde antes de este modulo) y expulsa
+// cualquier sesion que tenga abierta AHORA MISMO.
+adminRouter.post('/moderation/block', async (req, res) => {
+  const userId = String(req.body?.userId || '');
+  const reasonId = String(req.body?.reasonId || '');
+  const messageId = req.body?.messageId ? String(req.body.messageId) : null;
+  if (!userId) return res.status(400).json({ error: 'INVALID_USER' });
+
+  const [user, reason] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId } }),
+    prisma.blockReason.findUnique({ where: { id: reasonId } }),
+  ]);
+  if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND' });
+  if (!reason) return res.status(400).json({ error: 'INVALID_REASON' });
+
+  const messageText = await snapshotMessage(messageId);
+  const block = await prisma.accountBlock.create({
+    data: {
+      userId,
+      reasonId,
+      messageId,
+      messageText,
+      blockedBy: req.user.id,
+      blockedByName: req.user.username,
+    },
+  });
+  await prisma.user.update({ where: { id: userId }, data: { blocked: true } });
+  await logAudit({ target: user, actor: req.user, field: 'blocked', oldValue: 'false', newValue: 'true', reason: reason.label });
+  kickUser(userId, reason.label);
+
+  res.status(201).json({ ok: true, block });
+});
+
+// Alerta (llamado de atencion) a una o varias cuentas de una sola vez. A la
+// cuenta que YA tiene 3 alertas o mas no se le crea una mas — se devuelve en
+// `blockedInstead` para que el panel le ofrezca bloquear en su lugar.
+adminRouter.post('/moderation/warn', async (req, res) => {
+  const userIds = Array.isArray(req.body?.userIds) ? [...new Set(req.body.userIds.map(String))] : [];
+  const reasonId = String(req.body?.reasonId || '');
+  const messageId = req.body?.messageId ? String(req.body.messageId) : null;
+  if (!userIds.length) return res.status(400).json({ error: 'INVALID_USERS' });
+
+  const reason = await prisma.blockReason.findUnique({ where: { id: reasonId } });
+  if (!reason) return res.status(400).json({ error: 'INVALID_REASON' });
+
+  const messageText = await snapshotMessage(messageId);
+  const warned = [];
+  const blockedInstead = [];
+
+  for (const userId of userIds) {
+    const priorCount = await prisma.warning.count({ where: { userId } });
+    if (priorCount >= WARNING_LIMIT) {
+      blockedInstead.push(userId);
+      continue;
+    }
+    const warning = await prisma.warning.create({
+      data: { userId, reasonId, messageId, messageText, issuedBy: req.user.id, issuedByName: req.user.username },
+    });
+    warned.push(warning);
+  }
+
+  res.status(201).json({ ok: true, warned, blockedInstead });
+});
+
+adminRouter.get('/account-blocks', async (req, res) => {
+  const onlyActive = req.query.active !== 'false';
+  const blocks = await prisma.accountBlock.findMany({
+    where: onlyActive ? { active: true } : undefined,
+    orderBy: { createdAt: 'desc' },
+    include: { reason: { select: { label: true } } },
+  });
+  const users = await prisma.user.findMany({ where: { id: { in: blocks.map((b) => b.userId) } }, select: { id: true, username: true } });
+  const usernameById = Object.fromEntries(users.map((u) => [u.id, u.username]));
+  res.json({
+    ok: true,
+    blocks: blocks.map((b) => ({ ...b, username: usernameById[b.userId] || null, reasonLabel: b.reason.label })),
+  });
+});
+
+adminRouter.put('/account-blocks/:id/unblock', async (req, res) => {
+  const block = await prisma.accountBlock.update({ where: { id: req.params.id }, data: { active: false } }).catch(() => null);
+  if (!block) return res.status(404).json({ error: 'NOT_FOUND' });
+  await prisma.user.update({ where: { id: block.userId } , data: { blocked: false } }).catch(() => null);
+  res.json({ ok: true });
+});
+
+adminRouter.get('/block-reasons', async (_req, res) => {
+  const reasons = await prisma.blockReason.findMany({ orderBy: { createdAt: 'asc' } });
+  res.json({ ok: true, reasons });
+});
+
+adminRouter.post('/block-reasons', async (req, res) => {
+  const label = String(req.body?.label || '').trim().slice(0, 60);
+  if (!label) return res.status(400).json({ error: 'INVALID_LABEL' });
+  const taken = await prisma.blockReason.findUnique({ where: { label } });
+  if (taken) return res.status(409).json({ error: 'LABEL_IN_USE' });
+  const reason = await prisma.blockReason.create({ data: { label } });
+  res.status(201).json({ ok: true, reason });
+});
+
+adminRouter.delete('/block-reasons/:id', async (req, res) => {
+  // Se verifica el uso a mano (en vez de solo confiar en la restriccion de
+  // clave foranea de la base): la violacion RESTRICT llega desde Postgres
+  // como un error generico sin el codigo P2003 que Prisma normalmente
+  // traduce, asi que intentar reconocerla por codigo de error no es
+  // confiable — mejor evitar el intento de borrado del todo si ya se sabe
+  // que va a fallar.
+  const [blockCount, warningCount] = await Promise.all([
+    prisma.accountBlock.count({ where: { reasonId: req.params.id } }),
+    prisma.warning.count({ where: { reasonId: req.params.id } }),
+  ]);
+  if (blockCount > 0 || warningCount > 0) return res.status(409).json({ error: 'REASON_IN_USE' });
+
+  const deleted = await prisma.blockReason.delete({ where: { id: req.params.id } }).catch(() => null);
+  if (!deleted) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.json({ ok: true });
 });
 
 // --- Modulo "Crear": avatares, objetos y niveles personalizados ---------

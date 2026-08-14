@@ -16,6 +16,26 @@ import {
 
 export const authRouter = Router();
 
+// Entrega (una sola vez) las alertas pendientes de una cuenta: se llama al
+// loguearse y de nuevo al terminar una partida (lo que pase primero), asi
+// que "entregar" tambien marca `delivered` para no repetirlas en el otro
+// disparador. `reason.label` viaja resuelto (no solo el id) porque el
+// cliente del juego solo necesita mostrar el texto, no volver a pedirlo.
+async function deliverPendingWarnings(userId) {
+  const warnings = await prisma.warning.findMany({
+    where: { userId, delivered: false },
+    include: { reason: { select: { label: true } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  if (warnings.length) {
+    await prisma.warning.updateMany({
+      where: { id: { in: warnings.map((w) => w.id) } },
+      data: { delivered: true, deliveredAt: new Date() },
+    });
+  }
+  return warnings.map((w) => ({ id: w.id, reasonLabel: w.reason.label, messageText: w.messageText, createdAt: w.createdAt }));
+}
+
 // Registro: primera vez que alguien activa su cuenta de GeoVS. Valida
 // formato de cada campo y unicidad de email/username por separado, para que
 // el cliente pueda mostrar el mensaje correcto ("cambia de correo" vs
@@ -65,11 +85,20 @@ authRouter.post('/login', async (req, res) => {
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
   const token = signToken(user);
-  res.json({ ok: true, token, user: toPublicUser(user) });
+  const pendingWarnings = await deliverPendingWarnings(user.id);
+  res.json({ ok: true, token, user: toPublicUser(user), pendingWarnings });
 });
 
 authRouter.get('/me', requireAuth, (req, res) => {
   res.json({ ok: true, user: toPublicUser(req.user) });
+});
+
+// El cliente del juego llama esto tambien al llegar a la pantalla de
+// resultados de fin de partida — asi una alerta mandada a media partida no
+// espera hasta el proximo login para mostrarse.
+authRouter.get('/pending-warnings', requireAuth, async (req, res) => {
+  const pendingWarnings = await deliverPendingWarnings(req.user.id);
+  res.json({ ok: true, pendingWarnings });
 });
 
 // Edicion de perfil: mismas reglas de validacion/unicidad que el registro,

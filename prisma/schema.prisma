@@ -174,6 +174,68 @@ model ChatMessage {
   @@index([roomCode])
 }
 
+// Motivo de bloqueo/alerta, elegido de una lista desplegable al moderar
+// (ver AccountBlock/Warning). Empieza sembrada con los 4 motivos pedidos
+// (ver seed en la migracion inicial); la seccion "Configuracion" del panel
+// permite agregar mas.
+model BlockReason {
+  id        String   @id @default(cuid())
+  label     String   @unique
+  createdAt DateTime @default(now())
+
+  accountBlocks AccountBlock[]
+  warnings      Warning[]
+
+  @@map("block_reasons")
+}
+
+// Bloqueo de una cuenta. `User.blocked` es la fuente de verdad para el login
+// (ya la revisaba requireAuth desde antes de este modulo); esta tabla es el
+// HISTORIAL de motivos — permite reactivar (active:false) sin perder el
+// registro de que paso y por que. `reason` es una relacion normal (no solo
+// un string suelto) a proposito: asi Prisma rechaza por si solo borrar un
+// BlockReason que todavia este en uso (ver DELETE /admin/block-reasons/:id).
+model AccountBlock {
+  id            String      @id @default(cuid())
+  userId        String
+  reasonId      String
+  reason        BlockReason @relation(fields: [reasonId], references: [id])
+  messageId     String?
+  messageText   String?
+  blockedBy     String
+  blockedByName String
+  active        Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+
+  @@map("account_blocks")
+  @@index([userId])
+  @@index([reasonId])
+}
+
+// Alerta (llamado de atencion, NO bloqueo) mandada a una cuenta por un
+// mensaje puntual. `delivered` se pone en true la primera vez que el juego
+// se la muestra al jugador (al loguearse o al terminar una partida, lo que
+// pase primero) para no repetirla dos veces. El conteo de Warning por
+// usuario es lo que decide si ya se agoto el limite de 3 y toca bloquear en
+// vez de alertar (ver POST /admin/moderation/warn).
+model Warning {
+  id           String      @id @default(cuid())
+  userId       String
+  reasonId     String
+  reason       BlockReason @relation(fields: [reasonId], references: [id])
+  messageId    String?
+  messageText  String?
+  issuedBy     String
+  issuedByName String
+  delivered    Boolean     @default(false)
+  deliveredAt  DateTime?
+  createdAt    DateTime    @default(now())
+
+  @@map("warnings")
+  @@index([userId])
+  @@index([reasonId])
+}
+
 // Imagen subida por un admin para usar como cara/skin del avatar cubo (el
 // unico tipo de avatar activo hoy). `kind` queda listo para otros tipos de
 // avatar (pies/nave/robot) que aun no tienen logica de juego definida.

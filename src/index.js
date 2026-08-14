@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import { RoomManager } from './rooms/RoomManager.js';
 import { registerSocketHandlers } from './socket/handlers.js';
+import { setIo } from './socket/ioRegistry.js';
 import { authRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { contentRouter } from './routes/content.js';
@@ -24,6 +25,7 @@ const io = new Server(httpServer, {
   cors: { origin: '*' }, // demo local: abierto a cualquier origen
 });
 
+setIo(io);
 const roomManager = new RoomManager(io);
 registerSocketHandlers(io, roomManager);
 

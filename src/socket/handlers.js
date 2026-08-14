@@ -3,6 +3,7 @@ import { DEFAULT_LEVEL_ID, listLevels } from '../game/levels.js';
 import { lookupCountry, clientIpFromSocket } from '../utils/geoip.js';
 import { verifyToken } from '../auth/tokens.js';
 import { prisma } from '../db.js';
+import { registerLiveSocket, unregisterLiveSocket } from './liveUsers.js';
 
 // Registra todos los listeners de socket.io. El servidor es la autoridad: cada
 // handler valida el estado de la sala/host antes de aplicar un cambio, nunca
@@ -45,6 +46,10 @@ export function registerSocketHandlers(io, roomManager) {
       socket.data.name = clean;
       socket.data.userId = account?.id || null;
       socket.data.role = account?.role || null;
+      // Registro de "quien esta conectado ahora" por cuenta — permite
+      // expulsarlo en vivo si un admin lo bloquea desde el panel mientras
+      // esta jugando (ver moderation/kick.js).
+      if (account) registerLiveSocket(account.id, socket.id);
       if (FACE_STATES.has(faceState)) socket.data.faceState = faceState;
       // Avatar cubo personalizado subido desde el panel (ver
       // routes/content.js). Se acepta cualquier string razonable — es solo
@@ -232,6 +237,7 @@ export function registerSocketHandlers(io, roomManager) {
     });
 
     socket.on('disconnect', () => {
+      unregisterLiveSocket(socket.data.userId, socket.id);
       handleLeave(io, roomManager, socket);
       closeConnectionLog(socket);
     });
