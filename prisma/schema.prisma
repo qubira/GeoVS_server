@@ -156,6 +156,24 @@ model CustomObjectType {
   @@map("custom_object_types")
 }
 
+// Copia persistida de cada mensaje de chat de sala (el broadcast en vivo
+// sigue siendo puramente en memoria, ver socket/handlers.js chat:message) —
+// para el modulo de moderacion "Conversaciones" del panel: buscar por
+// palabra y, mas adelante, bloquear/alertar a partir de un mensaje puntual.
+// userId es null para sesiones anonimas (sin cuenta, ver Room.js).
+model ChatMessage {
+  id        String   @id @default(cuid())
+  roomCode  String
+  userId    String?
+  username  String
+  text      String
+  createdAt DateTime @default(now())
+
+  @@map("chat_messages")
+  @@index([userId])
+  @@index([roomCode])
+}
+
 // Imagen subida por un admin para usar como cara/skin del avatar cubo (el
 // unico tipo de avatar activo hoy). `kind` queda listo para otros tipos de
 // avatar (pies/nave/robot) que aun no tienen logica de juego definida.

@@ -208,6 +208,13 @@ export function registerSocketHandlers(io, roomManager) {
       if (!room || !player || !text) return;
       const clean = String(text).slice(0, 200);
       io.to(room.code).emit('chat:message', { playerId: player.id, name: player.name, text: clean, ts: Date.now() });
+
+      // Copia persistida para el modulo de moderacion "Conversaciones" del
+      // panel — no bloquea el broadcast de arriba (mismo patron
+      // fire-and-forget que _openPlaySession/_closePlaySession en Room.js).
+      prisma.chatMessage
+        .create({ data: { roomCode: room.code, userId: player.userId, username: player.name, text: clean } })
+        .catch((err) => console.error('Error guardando mensaje de chat:', err));
     });
 
     // Relay puntual (no broadcast) de señalización WebRTC para el micrófono

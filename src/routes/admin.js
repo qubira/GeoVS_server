@@ -375,6 +375,28 @@ adminRouter.get('/connections/by-country', async (req, res) => {
   });
 });
 
+// --- Conversaciones (moderacion) -----------------------------------------
+// Restringido a admin/moderator igual que el resto de las secciones que no
+// son el modulo "Crear" (ver el gate de arriba).
+adminRouter.use('/chat-messages', requireRole('admin', 'moderator'));
+
+adminRouter.get('/chat-messages', async (req, res) => {
+  const search = String(req.query.search || '').trim();
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = 50;
+  const where = search ? { text: { contains: search, mode: 'insensitive' } } : undefined;
+  const [messages, total] = await Promise.all([
+    prisma.chatMessage.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.chatMessage.count({ where }),
+  ]);
+  res.json({ ok: true, messages, total, page, pageSize });
+});
+
 // --- Modulo "Crear": avatares, objetos y niveles personalizados ---------
 
 const ALLOWED_UPLOAD_KINDS = {
