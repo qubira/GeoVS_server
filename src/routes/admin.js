@@ -21,10 +21,19 @@ export const adminRouter = Router();
 
 const ROLES = ['player', 'developer', 'moderator', 'admin'];
 
-// Todo /admin requiere estar logueado Y tener rol admin o moderator. Dentro,
-// algunas acciones (cambiar rol, eliminar cuenta) se restringen ademas a
-// admin, para que un moderador no pueda auto-ascenderse ni borrar cuentas.
-adminRouter.use(requireAuth, requireRole('admin', 'moderator'));
+// Todo /admin requiere estar logueado Y tener rol admin, moderator o
+// developer. El rol developer solo debe poder usar el modulo "Crear"
+// (uploads/avatares/objetos/pistas personalizadas) — las secciones de
+// cuentas/historial/conexiones/lista de espera se restringen aparte, mas
+// abajo, a admin/moderator igual que ya se hacia con acciones puntuales
+// (cambiar rol, eliminar cuenta) que se restringen ademas a admin.
+adminRouter.use(requireAuth, requireRole('admin', 'moderator', 'developer'));
+
+// Secciones que developer NO debe ver ni usar (todo lo que no es el modulo
+// "Crear"): se les aplica un segundo gate mas estricto, con el mismo patron
+// ya usado en rutas puntuales de abajo (DELETE /users/:id, DELETE
+// /waitlist/:id).
+adminRouter.use(['/users', '/audit-logs', '/connections', '/accounts', '/levels', '/waitlist'], requireRole('admin', 'moderator'));
 
 function dayKey(date) {
   return date.toISOString().slice(0, 10); // YYYY-MM-DD
