@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../db.js';
 import { hashPassword } from '../auth/password.js';
 import { requireAuth, requireRole } from '../auth/middleware.js';
@@ -42,6 +43,15 @@ function dayKey(date) {
   return date.toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
+// Convierte un string de query param a Date valida, o null si esta vacio o
+// mal formado (evita mandarle un Invalid Date a Prisma) — usado por los
+// filtros avanzados de fecha en varias secciones del panel.
+function parseDateParam(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 // Resuelve una ventana de fechas [start, end) a partir de los query params
 // `range` (day|week|month, default day) y `date` (YYYY-MM-DD, default hoy).
 // "Hoy" es simplemente range=day sin date. Se mantiene todo en UTC, igual que
@@ -62,6 +72,9 @@ function rangeWindow(req) {
 adminRouter.get('/users', async (req, res) => {
   const search = String(req.query.search || '').trim();
   const roleFilter = String(req.query.role || '');
+  const blockedFilter = req.query.blocked; // 'true' | 'false' | undefined (sin filtrar)
+  const dateFrom = parseDateParam(req.query.dateFrom);
+  const dateTo = parseDateParam(req.query.dateTo);
   const where = {
     AND: [
       search
@@ -73,6 +86,9 @@ adminRouter.get('/users', async (req, res) => {
           }
         : {},
       ROLES.includes(roleFilter) ? { role: roleFilter } : {},
+      blockedFilter === 'true' || blockedFilter === 'false' ? { blocked: blockedFilter === 'true' } : {},
+      dateFrom ? { createdAt: { gte: dateFrom } } : {},
+      dateTo ? { createdAt: { lte: dateTo } } : {},
     ],
   };
   const users = await prisma.user.findMany({ where, orderBy: { createdAt: 'desc' } });
@@ -218,7 +234,21 @@ adminRouter.get('/audit-logs', async (req, res) => {
   // sigue siendo encontrable por el nombre que tenia en ese momento.
   const userId = req.query.userId ? String(req.query.userId) : undefined;
   const username = req.query.username ? String(req.query.username) : undefined;
-  const where = userId || username ? { OR: [userId ? { userId } : null, username ? { targetUsername: username } : null].filter(Boolean) } : undefined;
+  const field = req.query.field ? String(req.query.field) : undefined;
+  const changedBy = req.query.changedBy ? String(req.query.changedBy).trim() : undefined;
+  const dateFrom = parseDateParam(req.query.dateFrom);
+  const dateTo = parseDateParam(req.query.dateTo);
+
+  const where = {
+    AND: [
+      userId || username ? { OR: [userId ? { userId } : null, username ? { targetUsername: username } : null].filter(Boolean) } : {},
+      field ? { field } : {},
+      changedBy ? { changedByUsername: { contains: changedBy, mode: 'insensitive' } } : {},
+      dateFrom ? { changedAt: { gte: dateFrom } } : {},
+      dateTo ? { changedAt: { lte: dateTo } } : {},
+    ],
+  };
+
   const logs = await prisma.auditLog.findMany({
     where,
     orderBy: { changedAt: 'desc' },
@@ -385,9 +415,23 @@ adminRouter.use('/chat-messages', requireRole('admin', 'moderator'));
 
 adminRouter.get('/chat-messages', async (req, res) => {
   const search = String(req.query.search || '').trim();
+  const roomCode = String(req.query.roomCode || '').trim();
+  const onlyAccounts = req.query.onlyAccounts === 'true';
+  const dateFrom = parseDateParam(req.query.dateFrom);
+  const dateTo = parseDateParam(req.query.dateTo);
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = 50;
-  const where = search ? { text: { contains: search, mode: 'insensitive' } } : undefined;
+
+  const where = {
+    AND: [
+      search ? { text: { contains: search, mode: 'insensitive' } } : {},
+      roomCode ? { roomCode: { contains: roomCode, mode: 'insensitive' } } : {},
+      onlyAccounts ? { userId: { not: null } } : {},
+      dateFrom ? { createdAt: { gte: dateFrom } } : {},
+      dateTo ? { createdAt: { lte: dateTo } } : {},
+    ],
+  };
+
   const [messages, total] = await Promise.all([
     prisma.chatMessage.findMany({
       where,
@@ -397,7 +441,23 @@ adminRouter.get('/chat-messages', async (req, res) => {
     }),
     prisma.chatMessage.count({ where }),
   ]);
-  res.json({ ok: true, messages, total, page, pageSize });
+
+  // Conteo de alertas por usuario, para que el panel pueda mostrar "2/3
+  // alertas" ANTES de intentar mandar una nueva (antes solo se enteraba
+  // despues, cuando el servidor la rechazaba por haber llegado al limite).
+  const userIds = [...new Set(messages.map((m) => m.userId).filter(Boolean))];
+  const warningCounts = userIds.length
+    ? await prisma.warning.groupBy({ by: ['userId'], where: { userId: { in: userIds } }, _count: { _all: true } })
+    : [];
+  const warningCountByUserId = Object.fromEntries(warningCounts.map((w) => [w.userId, w._count._all]));
+
+  res.json({
+    ok: true,
+    messages: messages.map((m) => ({ ...m, warningCount: m.userId ? warningCountByUserId[m.userId] || 0 : null })),
+    total,
+    page,
+    pageSize,
+  });
 });
 
 // --- Moderacion: bloqueo, alertas y motivos ------------------------------
@@ -410,6 +470,35 @@ async function snapshotMessage(messageId) {
   const msg = await prisma.chatMessage.findUnique({ where: { id: messageId } });
   return msg?.text || null;
 }
+
+// Metricas de moderacion para la tarjeta nueva del Resumen: cuentas
+// bloqueadas activas (total, no depende del rango), y lo demas si acotado
+// al rango elegido (igual que el resto del dashboard).
+adminRouter.get('/moderation/summary', async (req, res) => {
+  const { start, end } = rangeWindow(req);
+  const [activeBlocks, warningsInRange, ipBlocksCount, messagesInRange, blockReasonUsage, warningReasonUsage] = await Promise.all([
+    prisma.accountBlock.count({ where: { active: true } }),
+    prisma.warning.count({ where: { createdAt: { gte: start, lt: end } } }),
+    prisma.ipBlock.count(),
+    prisma.chatMessage.count({ where: { createdAt: { gte: start, lt: end } } }),
+    prisma.accountBlock.groupBy({ by: ['reasonId'], where: { createdAt: { gte: start, lt: end } }, _count: { _all: true } }),
+    prisma.warning.groupBy({ by: ['reasonId'], where: { createdAt: { gte: start, lt: end } }, _count: { _all: true } }),
+  ]);
+
+  const reasons = await prisma.blockReason.findMany({ select: { id: true, label: true } });
+  const labelById = Object.fromEntries(reasons.map((r) => [r.id, r.label]));
+  const combinedByReason = new Map();
+  for (const row of [...blockReasonUsage, ...warningReasonUsage]) {
+    const label = labelById[row.reasonId] || 'Motivo eliminado';
+    combinedByReason.set(label, (combinedByReason.get(label) || 0) + row._count._all);
+  }
+  const topReasons = [...combinedByReason.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  res.json({ ok: true, activeBlocks, warningsInRange, ipBlocksCount, messagesInRange, topReasons });
+});
 
 // Bloquea una cuenta: crea el historial (AccountBlock), marca User.blocked
 // (eso es lo que ya rechaza el login desde antes de este modulo) y expulsa
@@ -458,9 +547,13 @@ adminRouter.post('/moderation/warn', async (req, res) => {
   const reason = await prisma.blockReason.findUnique({ where: { id: reasonId } });
   if (!reason) return res.status(400).json({ error: 'INVALID_REASON' });
 
+  const targets = await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, username: true } });
+  const targetById = Object.fromEntries(targets.map((u) => [u.id, u]));
+
   const messageText = await snapshotMessage(messageId);
   const warned = [];
   const blockedInstead = [];
+  const auditEntries = [];
 
   for (const userId of userIds) {
     const priorCount = await prisma.warning.count({ where: { userId } });
@@ -472,15 +565,53 @@ adminRouter.post('/moderation/warn', async (req, res) => {
       data: { userId, reasonId, messageId, messageText, issuedBy: req.user.id, issuedByName: req.user.username },
     });
     warned.push(warning);
+    // Antes solo los bloqueos quedaban en Historial — las alertas tambien
+    // deberian ser auditables (quien alerto a quien, por que y cuando).
+    const target = targetById[userId];
+    if (target) {
+      auditEntries.push({ target, actor: req.user, field: 'warned', newValue: reason.label, reason: messageText || undefined });
+    }
   }
+  if (auditEntries.length) await logAuditMany(auditEntries);
 
   res.status(201).json({ ok: true, warned, blockedInstead });
 });
 
 adminRouter.get('/account-blocks', async (req, res) => {
   const onlyActive = req.query.active !== 'false';
+  const search = String(req.query.search || '').trim();
+  const dateFrom = parseDateParam(req.query.dateFrom);
+  const dateTo = parseDateParam(req.query.dateTo);
+
+  // AccountBlock.userId es un string suelto (no una relacion Prisma a User),
+  // asi que buscar por nombre de usuario primero resuelve los ids que
+  // matchean y despues se usan como filtro — el motivo si es una relacion
+  // real (BlockReason), esa parte se filtra directo.
+  let matchingUserIds = [];
+  if (search) {
+    const matchingUsers = await prisma.user.findMany({ where: { username: { contains: search, mode: 'insensitive' } }, select: { id: true } });
+    matchingUserIds = matchingUsers.map((u) => u.id);
+  }
+
+  const where = {
+    AND: [
+      onlyActive ? { active: true } : {},
+      dateFrom ? { createdAt: { gte: dateFrom } } : {},
+      dateTo ? { createdAt: { lte: dateTo } } : {},
+      search
+        ? {
+            OR: [
+              { userId: { in: matchingUserIds } },
+              { reason: { label: { contains: search, mode: 'insensitive' } } },
+              { messageText: { contains: search, mode: 'insensitive' } },
+            ],
+          }
+        : {},
+    ],
+  };
+
   const blocks = await prisma.accountBlock.findMany({
-    where: onlyActive ? { active: true } : undefined,
+    where,
     orderBy: { createdAt: 'desc' },
     include: { reason: { select: { label: true } } },
   });
@@ -534,8 +665,12 @@ adminRouter.delete('/block-reasons/:id', async (req, res) => {
 // --- Lista negra de IP ----------------------------------------------------
 adminRouter.use('/ip-blocks', requireRole('admin', 'moderator'));
 
-adminRouter.get('/ip-blocks', async (_req, res) => {
-  const blocks = await prisma.ipBlock.findMany({ orderBy: { createdAt: 'desc' } });
+adminRouter.get('/ip-blocks', async (req, res) => {
+  const search = String(req.query.search || '').trim();
+  const where = search
+    ? { OR: [{ ip: { contains: search } }, { reason: { contains: search, mode: 'insensitive' } }] }
+    : undefined;
+  const blocks = await prisma.ipBlock.findMany({ where, orderBy: { createdAt: 'desc' } });
   res.json({ ok: true, blocks });
 });
 
@@ -780,9 +915,23 @@ adminRouter.delete('/custom-levels/:id', async (req, res) => {
 // schema explicitamente, para no mezclarla con el modelo `User` de este
 // servidor (schema "geovs_accounts").
 adminRouter.get('/waitlist', async (req, res) => {
+  const search = String(req.query.search || '').trim();
+  const dateFrom = parseDateParam(req.query.dateFrom);
+  const dateTo = parseDateParam(req.query.dateTo);
+
+  // Tabla cruda (no es un modelo Prisma), asi que el filtro se arma con
+  // Prisma.sql/Prisma.join en vez de un objeto `where` — sigue parametrizado
+  // (sin riesgo de inyeccion), solo cambia la forma de construirlo.
+  const conditions = [];
+  if (search) conditions.push(Prisma.sql`(name ILIKE ${'%' + search + '%'} OR email ILIKE ${'%' + search + '%'})`);
+  if (dateFrom) conditions.push(Prisma.sql`"createdAt" >= ${dateFrom}`);
+  if (dateTo) conditions.push(Prisma.sql`"createdAt" <= ${dateTo}`);
+  const whereClause = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty;
+
   const rows = await prisma.$queryRaw`
     SELECT id, name, email, "createdAt"
     FROM public.waitlist
+    ${whereClause}
     ORDER BY "createdAt" DESC
     LIMIT 500
   `;
