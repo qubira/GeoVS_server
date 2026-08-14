@@ -4,6 +4,7 @@ import { lookupCountry, clientIpFromSocket } from '../utils/geoip.js';
 import { verifyToken } from '../auth/tokens.js';
 import { prisma } from '../db.js';
 import { registerLiveSocket, unregisterLiveSocket } from './liveUsers.js';
+import { isIpBlocked } from '../moderation/ipBlock.js';
 
 // Registra todos los listeners de socket.io. El servidor es la autoridad: cada
 // handler valida el estado de la sala/host antes de aplicar un cambio, nunca
@@ -27,6 +28,14 @@ export function registerSocketHandlers(io, roomManager) {
     socket.data.avatarImageUrl = null;
 
     socket.on('player:identify', async ({ name, faceState, token, avatarImageUrl } = {}, ack) => {
+      // Defensa en profundidad: register/login ya rechazan una IP bloqueada,
+      // pero un token emitido ANTES del bloqueo de la IP seguiria siendo
+      // valido, asi que se revisa de nuevo aca (cubre tambien las sesiones
+      // anonimas, que ni pasan por register/login).
+      if (await isIpBlocked(clientIpFromSocket(socket))) {
+        return ack?.({ ok: false, error: 'IP_BLOCKED' });
+      }
+
       // Si viene un token de sesion valido (cliente web con cuenta), la
       // identidad la manda la cuenta: se ignora el nombre libre y se usa el
       // username real + rol desde la base. Sin token (app movil, o invitado)

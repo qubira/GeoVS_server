@@ -46,3 +46,12 @@ export function clientIpFromSocket(socket) {
   if (forwarded) return forwarded.split(',')[0].trim();
   return socket.handshake.address;
 }
+
+// Mismo criterio que clientIpFromSocket, para rutas HTTP (login/registro) —
+// no depende de `app.set('trust proxy', ...)` (no esta configurado), lee el
+// header directo igual que el lado de sockets.
+export function clientIpFromRequest(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) return forwarded.split(',')[0].trim();
+  return req.socket?.remoteAddress || null;
+}

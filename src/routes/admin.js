@@ -8,6 +8,8 @@ import { listLevels, syncCustomLevelInMemory, removeCustomLevelFromMemory } from
 import { PHYSICS } from '../config.js';
 import { uploadBuffer } from '../utils/cloudinary.js';
 import { kickUser } from '../moderation/kick.js';
+import { maybeAutoBlockIp, isIpBlocked } from '../moderation/ipBlock.js';
+import { clientIpFromRequest } from '../utils/geoip.js';
 import {
   normalizeEmail,
   normalizeUsername,
@@ -439,6 +441,7 @@ adminRouter.post('/moderation/block', async (req, res) => {
   await prisma.user.update({ where: { id: userId }, data: { blocked: true } });
   await logAudit({ target: user, actor: req.user, field: 'blocked', oldValue: 'false', newValue: 'true', reason: reason.label });
   kickUser(userId, reason.label);
+  await maybeAutoBlockIp(userId);
 
   res.status(201).json({ ok: true, block });
 });
@@ -526,6 +529,42 @@ adminRouter.delete('/block-reasons/:id', async (req, res) => {
   const deleted = await prisma.blockReason.delete({ where: { id: req.params.id } }).catch(() => null);
   if (!deleted) return res.status(404).json({ error: 'NOT_FOUND' });
   res.json({ ok: true });
+});
+
+// --- Lista negra de IP ----------------------------------------------------
+adminRouter.use('/ip-blocks', requireRole('admin', 'moderator'));
+
+adminRouter.get('/ip-blocks', async (_req, res) => {
+  const blocks = await prisma.ipBlock.findMany({ orderBy: { createdAt: 'desc' } });
+  res.json({ ok: true, blocks });
+});
+
+adminRouter.post('/ip-blocks', async (req, res) => {
+  const ip = String(req.body?.ip || '').trim();
+  const reason = String(req.body?.reason || '').trim().slice(0, 200);
+  if (!ip) return res.status(400).json({ error: 'INVALID_IP' });
+  if (!reason) return res.status(400).json({ error: 'INVALID_REASON' });
+  const taken = await prisma.ipBlock.findUnique({ where: { ip } });
+  if (taken) return res.status(409).json({ error: 'IP_ALREADY_BLOCKED' });
+  const block = await prisma.ipBlock.create({ data: { ip, reason, blockedBy: req.user.username } });
+  res.status(201).json({ ok: true, block });
+});
+
+adminRouter.delete('/ip-blocks/:id', async (req, res) => {
+  await prisma.ipBlock.delete({ where: { id: req.params.id } }).catch(() => null);
+  res.json({ ok: true });
+});
+
+// Cuentas vistas conectandose desde una IP dada — reutiliza ConnectionLog
+// (ya tiene ip+userId), no hace falta guardar esa relacion aparte.
+adminRouter.get('/ip-blocks/:ip/accounts', async (req, res) => {
+  const logs = await prisma.connectionLog.findMany({
+    where: { ip: req.params.ip },
+    distinct: ['userId'],
+    orderBy: { connectedAt: 'desc' },
+    include: { user: { select: { id: true, username: true, blocked: true, role: true } } },
+  });
+  res.json({ ok: true, accounts: logs.map((l) => l.user).filter(Boolean) });
 });
 
 // --- Modulo "Crear": avatares, objetos y niveles personalizados ---------

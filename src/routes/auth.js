@@ -13,6 +13,8 @@ import {
   isValidAge,
   toPublicUser,
 } from '../auth/validators.js';
+import { isIpBlocked } from '../moderation/ipBlock.js';
+import { clientIpFromRequest } from '../utils/geoip.js';
 
 export const authRouter = Router();
 
@@ -41,6 +43,8 @@ async function deliverPendingWarnings(userId) {
 // el cliente pueda mostrar el mensaje correcto ("cambia de correo" vs
 // "cambia de nombre de usuario").
 authRouter.post('/register', async (req, res) => {
+  if (await isIpBlocked(clientIpFromRequest(req))) return res.status(403).json({ error: 'IP_BLOCKED' });
+
   const email = normalizeEmail(req.body?.email);
   const username = normalizeUsername(req.body?.username);
   const password = req.body?.password;
@@ -72,6 +76,8 @@ authRouter.post('/register', async (req, res) => {
 // Login: usuario + contrasena (no email, segun lo pedido). Mensaje de error
 // generico a proposito (no revela si fallo el usuario o la contrasena).
 authRouter.post('/login', async (req, res) => {
+  if (await isIpBlocked(clientIpFromRequest(req))) return res.status(403).json({ error: 'IP_BLOCKED' });
+
   const username = normalizeUsername(req.body?.username);
   const password = req.body?.password;
 

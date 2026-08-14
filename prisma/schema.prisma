@@ -236,6 +236,22 @@ model Warning {
   @@index([reasonId])
 }
 
+// IP bloqueada: nada se puede loguear/registrar/conectar desde ahi (ver
+// enforcement en routes/auth.js y socket/handlers.js). `blockedBy` null =
+// bloqueo automatico del sistema (una segunda cuenta bloqueada reincidiendo
+// desde una IP donde ya hubo otra cuenta bloqueada — ver
+// moderation/ipAutoBlock.js). "Que cuentas se loguearon en esta IP" se
+// responde con ConnectionLog (ya tiene ip+userId), no hace falta otra tabla.
+model IpBlock {
+  id        String   @id @default(cuid())
+  ip        String   @unique
+  reason    String
+  blockedBy String?
+  createdAt DateTime @default(now())
+
+  @@map("ip_blocks")
+}
+
 // Imagen subida por un admin para usar como cara/skin del avatar cubo (el
 // unico tipo de avatar activo hoy). `kind` queda listo para otros tipos de
 // avatar (pies/nave/robot) que aun no tienen logica de juego definida.
