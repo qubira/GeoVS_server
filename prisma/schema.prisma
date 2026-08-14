@@ -279,6 +279,22 @@ model RoomLatencySample {
   @@map("room_latency_samples")
 }
 
+// Comentario/sugerencia que un jugador deja desde el juego (perfil). `read`
+// es lo unico que hace falta para la logica de "bandeja" (no leidos vs
+// leidos) — no hace falta un enum de estados mas elaborado para esto.
+model Comment {
+  id        String   @id @default(cuid())
+  userId    String?
+  username  String
+  text      String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([read])
+  @@map("comments")
+}
+
 // IP bloqueada: nada se puede loguear/registrar/conectar desde ahi (ver
 // enforcement en routes/auth.js y socket/handlers.js). `blockedBy` null =
 // bloqueo automatico del sistema (una segunda cuenta bloqueada reincidiendo

@@ -786,6 +786,41 @@ adminRouter.post('/rooms/:code/end', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Bandeja de comentarios -------------------------------------------
+adminRouter.use('/feedback', requireRole('admin', 'moderator'));
+
+adminRouter.get('/feedback', async (req, res) => {
+  const search = String(req.query.search || '').trim();
+  const readFilter = req.query.read; // 'true' | 'false' | undefined
+  const dateFrom = parseDateParam(req.query.dateFrom);
+  const dateTo = parseDateParam(req.query.dateTo);
+  const where = {
+    AND: [
+      search ? { OR: [{ text: { contains: search, mode: 'insensitive' } }, { username: { contains: search, mode: 'insensitive' } }] } : {},
+      readFilter === 'true' || readFilter === 'false' ? { read: readFilter === 'true' } : {},
+      dateFrom ? { createdAt: { gte: dateFrom } } : {},
+      dateTo ? { createdAt: { lte: dateTo } } : {},
+    ],
+  };
+  const [comments, unreadCount] = await Promise.all([
+    prisma.comment.findMany({ where, orderBy: { createdAt: 'desc' }, take: 300 }),
+    prisma.comment.count({ where: { read: false } }),
+  ]);
+  res.json({ ok: true, comments, unreadCount });
+});
+
+adminRouter.put('/feedback/:id/read', async (req, res) => {
+  const read = req.body?.read !== false;
+  const comment = await prisma.comment.update({ where: { id: req.params.id }, data: { read } }).catch(() => null);
+  if (!comment) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.json({ ok: true, comment });
+});
+
+adminRouter.delete('/feedback/:id', async (req, res) => {
+  await prisma.comment.delete({ where: { id: req.params.id } }).catch(() => null);
+  res.json({ ok: true });
+});
+
 // --- Modulo "Crear": avatares, objetos y niveles personalizados ---------
 
 const ALLOWED_UPLOAD_KINDS = {

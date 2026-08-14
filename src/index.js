@@ -8,6 +8,7 @@ import { setIo, setRoomManager } from './socket/ioRegistry.js';
 import { authRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { contentRouter } from './routes/content.js';
+import { feedbackRouter } from './routes/feedback.js';
 import { loadCustomLevelsFromDb } from './game/levels.js';
 import { startLatencyProbe } from './metrics/latency.js';
 import { startRoomLatencySampler } from './metrics/roomLatencySampler.js';
@@ -21,6 +22,7 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/auth', authRouter);
 app.use('/admin', adminRouter);
 app.use('/content', contentRouter);
+app.use('/feedback', feedbackRouter);
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
