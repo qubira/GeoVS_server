@@ -95,8 +95,16 @@ authRouter.post('/login', async (req, res) => {
   res.json({ ok: true, token, user: toPublicUser(user), pendingWarnings });
 });
 
-authRouter.get('/me', requireAuth, (req, res) => {
-  res.json({ ok: true, user: toPublicUser(req.user) });
+// El cliente llama esto para RESTAURAR una sesion ya guardada (token en
+// localStorage), sin volver a pasar por /login — es el camino que toma la
+// gran mayoria de las entradas reales (BootstrapScreen.tsx), asi que las
+// alertas pendientes tambien se entregan aca. Antes solo se mandaban desde
+// /login y /pending-warnings, por eso una alerta casi nunca se llegaba a
+// ver: un jugador que ya tenia sesion guardada jamas volvia a pasar por
+// /login.
+authRouter.get('/me', requireAuth, async (req, res) => {
+  const pendingWarnings = await deliverPendingWarnings(req.user.id);
+  res.json({ ok: true, user: toPublicUser(req.user), pendingWarnings });
 });
 
 // El cliente del juego llama esto tambien al llegar a la pantalla de
