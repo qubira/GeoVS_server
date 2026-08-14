@@ -236,6 +236,49 @@ model Warning {
   @@index([reasonId])
 }
 
+// Una fila por INSTANCIA de sala (el codigo se libera y se puede reusar mas
+// adelante, asi que `code` no es unico por si solo — cada vez que se crea
+// una sala nueva es una fila nueva). `peakPlayers` se actualiza en cada
+// muestreo (ver metrics/roomLatencySampler.js); `endReason` distingue una
+// sala que se vacio sola de una que un admin corto a la fuerza.
+model RoomLog {
+  id          String    @id @default(cuid())
+  code        String
+  mode        String
+  levelId     String
+  maxPlayers  Int
+  createdAt   DateTime  @default(now())
+  endedAt     DateTime?
+  endReason   String? // 'emptied' | 'admin'
+  endedBy     String? // username del admin, solo si endReason='admin'
+  peakPlayers Int       @default(0)
+
+  samples RoomLatencySample[]
+
+  @@index([code])
+  @@index([createdAt])
+  @@map("room_logs")
+}
+
+// Foto periodica (ver metrics/roomLatencySampler.js, cada ~20s mientras la
+// sala tiene jugadores) de la latencia real (ping/RTT) contra el servidor,
+// agregada entre los jugadores conectados en ese momento — esto es lo que
+// arma el grafico de lineas con picos de caida por sala.
+model RoomLatencySample {
+  id          String   @id @default(cuid())
+  roomLogId   String
+  roomLog     RoomLog  @relation(fields: [roomLogId], references: [id], onDelete: Cascade)
+  takenAt     DateTime @default(now())
+  avgRttMs    Int?
+  minRttMs    Int?
+  maxRttMs    Int?
+  playerCount Int
+
+  @@index([roomLogId])
+  @@index([takenAt])
+  @@map("room_latency_samples")
+}
+
 // IP bloqueada: nada se puede loguear/registrar/conectar desde ahi (ver
 // enforcement en routes/auth.js y socket/handlers.js). `blockedBy` null =
 // bloqueo automatico del sistema (una segunda cuenta bloqueada reincidiendo

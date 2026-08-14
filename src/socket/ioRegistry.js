@@ -7,6 +7,7 @@
 // getIo() en el momento de atender un request (para entonces el servidor ya
 // esta arriba, asi que siempre esta seteado).
 let ioInstance = null;
+let roomManagerInstance = null;
 
 export function setIo(io) {
   ioInstance = io;
@@ -14,4 +15,15 @@ export function setIo(io) {
 
 export function getIo() {
   return ioInstance;
+}
+
+// Mismo motivo que `io`: admin.js necesita poder listar/finalizar salas
+// EN VIVO (ver routes/admin.js seccion "Salas"), y RoomManager solo existia
+// dentro de index.js.
+export function setRoomManager(roomManager) {
+  roomManagerInstance = roomManager;
+}
+
+export function getRoomManager() {
+  return roomManagerInstance;
 }

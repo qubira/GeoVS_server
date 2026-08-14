@@ -11,6 +11,8 @@ import { uploadBuffer } from '../utils/cloudinary.js';
 import { kickUser } from '../moderation/kick.js';
 import { maybeAutoBlockIp, isIpBlocked } from '../moderation/ipBlock.js';
 import { clientIpFromRequest } from '../utils/geoip.js';
+import { getIo, getRoomManager } from '../socket/ioRegistry.js';
+import { classifyRtt } from '../metrics/latency.js';
 import {
   normalizeEmail,
   normalizeUsername,
@@ -92,7 +94,27 @@ adminRouter.get('/users', async (req, res) => {
     ],
   };
   const users = await prisma.user.findMany({ where, orderBy: { createdAt: 'desc' } });
-  res.json({ ok: true, users: users.map(toPublicUser) });
+
+  // Ultima IP conocida de cada cuenta, para el mapeo rapido en la tabla —
+  // el historico completo (con fecha/hora de cada conexion) ya se ve en el
+  // modal de historial de cada cuenta (ver /users/:id/connections), esto es
+  // solo el vistazo rapido en el listado.
+  const lastLogs = await prisma.connectionLog.findMany({
+    where: { userId: { in: users.map((u) => u.id) } },
+    orderBy: { connectedAt: 'desc' },
+    distinct: ['userId'],
+    select: { userId: true, ip: true, connectedAt: true },
+  });
+  const lastIpByUserId = Object.fromEntries(lastLogs.map((l) => [l.userId, { ip: l.ip, at: l.connectedAt }]));
+
+  res.json({
+    ok: true,
+    users: users.map((u) => ({
+      ...toPublicUser(u),
+      lastIp: lastIpByUserId[u.id]?.ip || null,
+      lastIpAt: lastIpByUserId[u.id]?.at || null,
+    })),
+  });
 });
 
 adminRouter.get('/users/:id', async (req, res) => {
@@ -700,6 +722,68 @@ adminRouter.get('/ip-blocks/:ip/accounts', async (req, res) => {
     include: { user: { select: { id: true, username: true, blocked: true, role: true } } },
   });
   res.json({ ok: true, accounts: logs.map((l) => l.user).filter(Boolean) });
+});
+
+// --- Salas ----------------------------------------------------------------
+adminRouter.use('/rooms', requireRole('admin', 'moderator'));
+
+// Salas EN VIVO ahora mismo: jugadores conectados y su calidad de conexion
+// real (ping/RTT contra el servidor — ver metrics/latency.js), calculada al
+// momento de pedir esta ruta, no guardada (para eso esta /rooms/history).
+adminRouter.get('/rooms/live', (_req, res) => {
+  const roomManager = getRoomManager();
+  const io = getIo();
+  if (!roomManager) return res.json({ ok: true, rooms: [] });
+
+  const rooms = [...roomManager.rooms.values()].map((room) => ({
+    code: room.code,
+    mode: room.mode,
+    levelId: room.levelId,
+    state: room.state,
+    maxPlayers: room.maxPlayers,
+    players: [...room.players.values()].map((p) => {
+      const socketId = room.tokenToSocket.get(p.id);
+      const rttMs = socketId ? io?.sockets.sockets.get(socketId)?.data?.lastRttMs ?? null : null;
+      return { id: p.id, name: p.name, connected: p.connected, rttMs, quality: p.connected ? classifyRtt(rttMs) : null };
+    }),
+  }));
+  res.json({ ok: true, rooms });
+});
+
+// Salas HISTORICAS (terminadas o en curso, con o sin filtro) — separado de
+// /rooms/live porque una consulta a la base no puede ver el estado en
+// memoria de las salas vivas, y viceversa.
+adminRouter.get('/rooms/history', async (req, res) => {
+  const search = String(req.query.search || '').trim();
+  const dateFrom = parseDateParam(req.query.dateFrom);
+  const dateTo = parseDateParam(req.query.dateTo);
+  const where = {
+    AND: [
+      search ? { code: { contains: search, mode: 'insensitive' } } : {},
+      dateFrom ? { createdAt: { gte: dateFrom } } : {},
+      dateTo ? { createdAt: { lte: dateTo } } : {},
+    ],
+  };
+  const logs = await prisma.roomLog.findMany({ where, orderBy: { createdAt: 'desc' }, take: 200 });
+  res.json({ ok: true, logs });
+});
+
+// Serie de tiempo de latencia de una sala puntual (para el grafico de
+// lineas — picos = caidas de calidad de conexion).
+adminRouter.get('/rooms/history/:id/samples', async (req, res) => {
+  const samples = await prisma.roomLatencySample.findMany({
+    where: { roomLogId: req.params.id },
+    orderBy: { takenAt: 'asc' },
+  });
+  res.json({ ok: true, samples });
+});
+
+// "Finalizar sala": expulsa a todos los jugadores conectados ahora mismo.
+adminRouter.post('/rooms/:code/end', (req, res) => {
+  const roomManager = getRoomManager();
+  const ended = roomManager?.endRoomByAdmin(req.params.code, req.user.username);
+  if (!ended) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.json({ ok: true });
 });
 
 // --- Modulo "Crear": avatares, objetos y niveles personalizados ---------
