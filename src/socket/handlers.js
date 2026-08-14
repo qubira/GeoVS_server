@@ -210,6 +210,20 @@ export function registerSocketHandlers(io, roomManager) {
       io.to(room.code).emit('chat:message', { playerId: player.id, name: player.name, text: clean, ts: Date.now() });
     });
 
+    // Relay puntual (no broadcast) de señalización WebRTC para el micrófono
+    // de la sala: cada cliente arma una malla completa de RTCPeerConnection
+    // con los demás jugadores, y usa este evento solo como "cable" para
+    // intercambiar ofertas/respuestas/candidatos ICE punto a punto. El
+    // servidor no entiende ni guarda el contenido de `data`.
+    socket.on('voice:signal', ({ toPlayerId, data } = {}) => {
+      const room = roomManager.getRoomOfSocket(socket.id);
+      const fromPlayer = room?.getPlayerBySocket(socket.id);
+      if (!room || !fromPlayer || !toPlayerId || !data) return;
+      const targetSocketId = room.getSocketIdForToken(toPlayerId);
+      if (!targetSocketId) return;
+      io.to(targetSocketId).emit('voice:signal', { fromPlayerId: fromPlayer.id, data });
+    });
+
     socket.on('disconnect', () => {
       handleLeave(io, roomManager, socket);
       closeConnectionLog(socket);

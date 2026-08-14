@@ -48,6 +48,7 @@ export class Room {
     this.players = new Map(); // token -> playerState (lobby + fisica)
     this.inputs = new Map(); // token -> { jumpHeld }
     this.socketToToken = new Map(); // socket.id (conexion actual) -> token
+    this.tokenToSocket = new Map(); // token -> socket.id (conexion actual) — inverso de socketToToken, para poder emitirle a UN jugador puntual (ver voice:signal en handlers.js)
 
     this.level = null;
     this.roundStartTime = null;
@@ -76,6 +77,13 @@ export class Room {
   getPlayerBySocket(socketId) {
     const token = this.tokenOf(socketId);
     return token ? this.players.get(token) : null;
+  }
+
+  // Sentido inverso de tokenOf: dado el id estable de un jugador, la conexion
+  // de socket ACTUAL (o null si esta desconectado). Usado para señalizacion
+  // WebRTC punto a punto (voice:signal en handlers.js).
+  getSocketIdForToken(token) {
+    return this.tokenToSocket.get(token) || null;
   }
 
   isHost(socketId) {
@@ -120,6 +128,7 @@ export class Room {
     this.players.set(token, player);
     this.inputs.set(token, { jumpHeld: false });
     this.socketToToken.set(socketId, token);
+    this.tokenToSocket.set(token, socketId);
     if (!this.hostId) this.hostId = token;
     return player;
   }
@@ -133,6 +142,7 @@ export class Room {
     if (!player) return null;
     player.connected = true;
     this.socketToToken.set(socketId, token);
+    this.tokenToSocket.set(token, socketId);
     // Si reconecta a media partida (p. ej. perdio señal y volvio), reabre su
     // PlaySession: la desconexion ya cerro la anterior (markDisconnected), asi
     // que el tiempo desconectado queda excluido de las metricas de juego.
@@ -149,6 +159,7 @@ export class Room {
     this.players.delete(token);
     this.inputs.delete(token);
     this.socketToToken.delete(socketId);
+    this.tokenToSocket.delete(token);
     let newHostId = null;
     if (this.hostId === token) {
       const next = this.players.keys().next();
@@ -170,6 +181,7 @@ export class Room {
       if (this.state === 'playing') this._closePlaySession(player, 'disconnected');
     }
     this.socketToToken.delete(socketId);
+    this.tokenToSocket.delete(token);
     let newHostId = null;
     if (this.hostId === token) {
       const next = [...this.players.values()].find((p) => p.connected && p.id !== token);
